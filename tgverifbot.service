@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Verification Bot
+After=network.target
+
+[Service]
+User=tgverifbot
+WorkingDirectory=/opt/tgverifbot
+ExecStart=/opt/tgverifbot/TelegramVerificationBot
+EnvironmentFile=/etc/tgverifbot/config.env
+Restart=always
+RestartSec=10
+SyslogIdentifier=tgverifbot
+
+[Install]
+WantedBy=multi-user.target
