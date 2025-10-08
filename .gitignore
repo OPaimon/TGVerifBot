@@ -57,3 +57,5 @@ nunit-*.xml
 bot_session.dat
 
 *.sqlite
+
+.env

@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  tgverifbot:
+    image: ghcr.io/opaimon/tgverifbot:latest
+    restart: unless-stopped
+    environment:
+      - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
+      - TelegramSettings__ApiId=${TELEGRAM_API_ID}
+      - TelegramSettings__ApiHash=${TELEGRAM_API_HASH}
+      - ConnectionStrings__Redis=redis:6379
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - redis
+
+  redis:
+    image: "docker.io/library/redis:alpine"
+    restart: unless-stopped
+    volumes:
+      - ./redis-data:/data

@@ -6,6 +6,9 @@ using TelegramVerificationBot.Tasks;
 
 namespace TelegramVerificationBot;
 
+/// <summary>
+/// Handles the core logic of user verification, including starting the process and handling quiz callbacks.
+/// </summary>
 public class VerificationService
 {
     private readonly ILogger<VerificationService> _logger;
@@ -21,42 +24,32 @@ public class VerificationService
         _quizService = quizService;
     }
 
+    /// <summary>
+    /// Initiates a new verification process for a user joining a chat.
+    /// </summary>
     public async Task HandleStartVerificationAsync(StartVerificationJob job)
     {
-        _logger.LogInformation("Received verification request: {Requester}", job.Requester);
+        _logger.LogInformation("Received verification request for user {UserId} in chat {ChatId}", job.Requester.From.Id, job.Requester.Chat.Id);
         var user = job.Requester.From;
         var chat = job.Requester.Chat;
         var userChat = job.Requester.UserChatId;
         var link = job.Requester.InviteLink;
 
         var userStatusKey = $"user_status:{user.Id}:{chat.Id}";
-        // Rate-limit repeated start-verification attempts per user per chat.
-        // if (!await _rateLimiter.AllowStartVerificationAsync(user.Id, chat.Id))
-        // {
-        //     _logger.LogWarning("Rate limit: too many start-verification attempts for user {UserId} in chat {ChatId}", user.Id, chat.Id);
-        //     return;
-        // }
 
+        // Check if the user already has a pending status or is blacklisted.
         if (await _redisDb.KeyExistsAsync(userStatusKey))
         {
-            _logger.LogWarning("User {userId} has an existing status (possibly blacklisted or pending) in chat {chatId}, rejecting join request.", user.Id, chat.Id);
-            return; // direct reject to avoid duplicate workflows
+            _logger.LogWarning("User {UserId} has an existing status (possibly blacklisted or pending) in chat {ChatId}, rejecting join request.", user.Id, chat.Id);
+            return; // Direct reject to avoid duplicate workflows.
         }
-
-        _logger.LogInformation("Received verification request: {Requester}", job.Requester);
-
-        // var redisKey = $"verification:{user.Id}:{chat.Id}";
-        // if (await _redisDb.KeyExistsAsync(redisKey))
-        // {
-        //     _logger.LogWarning("用户 {userId} 已在验证 {chatId}中，忽略新的入群申请。", user.Id, chat.Id);
-        //     return;
-        // }
 
         var quiz = await _quizService.GetQuizRandomAsync();
 
+        // Create a unique token for each quiz option.
         List<OptionWithToken> optionsWithTokens = quiz.Options
-        .Select(optionText => new OptionWithToken(Option: optionText, Token: Guid.NewGuid().ToString()))
-        .ToList();
+            .Select(optionText => new OptionWithToken(Option: optionText, Token: Guid.NewGuid().ToString()))
+            .ToList();
 
         var correctToken = optionsWithTokens[quiz.CorrectOptionIndex].Token;
         var verificationTokenKey = $"verification_token:{correctToken}";
@@ -67,38 +60,34 @@ public class VerificationService
         );
         var stateJson = System.Text.Json.JsonSerializer.Serialize(stateObj);
 
-        // Store the temporary status/key. Use consistent casing for cooldown markers.
+        // Store a temporary lock for the user to prevent concurrent verifications. The value is the correct token.
         await _redisDb.StringSetAsync(userStatusKey, correctToken, TimeSpan.FromMinutes(5));
+        // Store the verification state, keyed by the correct token.
         await _redisDb.StringSetAsync(verificationTokenKey, stateJson, TimeSpan.FromMinutes(5));
 
         _logger.LogInformation("Dispatching SendQuizJob for user {UserId}", user.Id);
-        await _dispatcher.DispatchAsync(new SendQuizJob(userChat, user, chat, quiz.Question, optionsWithTokens, link)); // 传递带令牌的选项
-
-        // bool added = await _redisDb.StringSetAsync(redisKey, stateJson, TimeSpan.FromMinutes(5));
-        // if (added)
-        // {
-        //     _logger.LogInformation("Dispatching SendQuizJob to chat {ChatId} with quiz {QuizId}", chat.Id, quiz.Id);
-        //     await _dispatcher.DispatchAsync(new SendQuizJob(userChat, user, chat, quiz, link));
-        //     _logger.LogInformation("Stored verification state in Redis under {Key}", redisKey);
-        // }
-        // else
-        // {
-        //     _logger.LogWarning("Failed to store verification state in Redis under {Key}", redisKey);
-        // }
+        // Pass the options with tokens to the next job.
+        await _dispatcher.DispatchAsync(new SendQuizJob(userChat, user, chat, quiz.Question, optionsWithTokens, link));
     }
 
+    /// <summary>
+    /// Handles the callback query when a user clicks a quiz option.
+    /// </summary>
     public async Task HandleCallbackAsync(ProcessQuizCallbackJob job)
     {
         var user = job.User;
-        var clickedToken = job.CallbackData; // <chatId>_<token>
-        var chatIdStr = clickedToken.Split('_')[0];
-        clickedToken = clickedToken.Substring(chatIdStr.Length + 1);
-        var chatId = long.Parse(chatIdStr);
-        var verificationTokenKey = $"verification_token:{clickedToken}";
-        var stateJson = await _redisDb.StringGetDeleteAsync(verificationTokenKey);
+        var callbackData = job.CallbackData; // Expected format: <chatId>_<token>
+        var parts = callbackData.Split('_', 2);
+        if (parts.Length != 2 || !long.TryParse(parts[0], out var chatId))
+        {
+            _logger.LogError("Invalid callback data format: {CallbackData}", callbackData);
+            return;
+        }
+        var clickedToken = parts[1];
 
-        // 首先检查状态锁值是否为Cooldown
         var userStatusKey = $"user_status:{user.Id}:{chatId}";
+
+        // First, check if the user status lock is 'Cooldown'.
         var status = await _redisDb.StringGetAsync(userStatusKey);
         if (status.HasValue && status.ToString().Equals("Cooldown", StringComparison.OrdinalIgnoreCase))
         {
@@ -106,14 +95,16 @@ public class VerificationService
             return;
         }
 
+        var verificationTokenKey = $"verification_token:{clickedToken}";
+        var stateJson = await _redisDb.StringGetDeleteAsync(verificationTokenKey);
 
         bool approve;
         if (stateJson.IsNullOrEmpty)
         {
-            _logger.LogWarning("No verification state found in Redis for token {Token}", clickedToken);
+            _logger.LogWarning("Verification failed for user {UserId}: incorrect option or expired token ({Token})", user.Id, clickedToken);
             approve = false;
 
-            // Use consistent 'Cooldown' marker and shorter TTL to slow down brute-force attempts
+            // On failure, set a cooldown to slow down brute-force attempts.
             await _redisDb.StringSetAsync(userStatusKey, "Cooldown", TimeSpan.FromMinutes(1));
             _logger.LogInformation("Set 1-minute cooldown for user {UserId} on chat {ChatId}", user.Id, chatId);
         }
@@ -123,26 +114,26 @@ public class VerificationService
 
             if (state != null && state.UserId == user.Id && state.ChatId == chatId)
             {
-                _logger.LogInformation("User {UserId} passed verification", user.Id);
+                _logger.LogInformation("User {UserId} passed verification for chat {ChatId}", user.Id, chatId);
                 approve = true;
 
-                // 3. 验证成功：删除“用户状态锁”，解除锁定
-                // On success: remove the pending token/status to avoid reuse
+                // On success, remove the user status lock to release the lock.
                 await _redisDb.KeyDeleteAsync(userStatusKey);
             }
             else
             {
-                // 用户ID或chatID不匹配的极端情况处理...
-                _logger.LogWarning("Verification state user ID mismatch or null for user {UserId}", user.Id);
+                // Handle edge case where the state is valid but doesn't match the user/chat.
+                _logger.LogWarning("Verification state mismatch for user {UserId} in chat {ChatId}. State: {@State}", user.Id, chatId, state);
                 approve = false;
+                throw new InvalidOperationException("Verification state mismatch.");
             }
         }
 
         await _dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, approve));
-        _logger.LogInformation("Handled verification result for user {UserId} in chat {ChatId}, approved: {Approve}", job.User, chatId, approve);
+        _logger.LogInformation("Handled verification result for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chatId, approve);
 
         var newText = approve ? "✅ 验证通过！欢迎加入！" : "❌ 验证失败，入群请求已被拒绝。";
         await _dispatcher.DispatchAsync(new EditMessageJob(job.Message, newText));
-        _logger.LogInformation("Edited verification message for user {UserId} in chat {ChatId}", job.User, chatId);
+        _logger.LogInformation("Edited verification message for user {UserId} in chat {ChatId}", user.Id, chatId);
     }
 }

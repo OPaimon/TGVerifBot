@@ -1,5 +1,8 @@
 namespace TelegramVerificationBot;
 
+/// <summary>
+/// The main background service that hosts the application's long-running processes.
+/// </summary>
 public class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
@@ -17,15 +20,15 @@ public class Worker : BackgroundService
 
         try
         {
-            // 这是 Worker 唯一的核心任务：
-            // 启动 Telegram 服务，并等待它完成。
-            // 我们将 stoppingToken 传递下去，以便 TelegramService 知道何时需要停止。
+            // This is the single core task of the Worker:
+            // to start the Telegram service and wait for it to complete.
+            // We pass the stoppingToken down so the TelegramService knows when to stop.
             await _telegramService.ConnectAndListenAsync(stoppingToken);
         }
         catch (Exception ex) when (ex is not TaskCanceledException)
         {
-            // 如果 TelegramService 的主循环中出现未处理的致命异常，
-            // 在这里捕获并记录，然后应用程序会随之停止。
+            // If an unhandled fatal exception occurs in the main loop of TelegramService,
+            // it's caught and logged here, and the application will then stop.
             _logger.LogCritical(ex, "The main application loop has crashed unexpectedly.");
         }
         finally
