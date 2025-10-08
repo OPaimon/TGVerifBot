@@ -1,0 +1,57 @@
+using StackExchange.Redis;
+using TelegramVerificationBot;
+using TelegramVerificationBot.Configuration;
+using TelegramVerificationBot.Dispatcher;
+using TelegramVerificationBot.Tasks;
+
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.Configure<TelegramSettings>(builder.Configuration.GetSection("TelegramSettings"));
+builder.Services.Configure<RateLimitingSettings>(builder.Configuration.GetSection("RateLimiting"));
+
+builder.Services.AddSingleton<TelegramService>();
+builder.Services.AddSingleton<VerificationService>();
+builder.Services.AddSingleton<QuizService>();
+
+var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
+{
+    [typeof(RespondToPingJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().RespondToPingAsync((RespondToPingJob)job)
+    ,
+    [typeof(StartVerificationJob)] = (sp, job) =>
+        sp.GetRequiredService<VerificationService>().HandleStartVerificationAsync((StartVerificationJob)job)
+    ,
+    [typeof(SendQuizJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().SendQuizAsync((SendQuizJob)job)
+    ,
+    [typeof(ProcessQuizCallbackJob)] = (sp, job) =>
+        sp.GetRequiredService<VerificationService>().HandleCallbackAsync((ProcessQuizCallbackJob)job)
+    ,
+    [typeof(ChatJoinRequestJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().HandleChatJoinRequestAsync((ChatJoinRequestJob)job)
+    ,
+    [typeof(EditMessageJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().HandleEditMessageAsync((EditMessageJob)job)
+};
+
+builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
+
+builder.Services.AddSingleton<FunctionalTaskDispatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<FunctionalTaskDispatcher>());
+
+
+var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+    ConnectionMultiplexer.Connect(redisConnectionString)
+);
+builder.Services.AddSingleton(sp => 
+    sp.GetRequiredService<IConnectionMultiplexer>().GetDatabase());
+
+// Register rate limiter
+builder.Services.AddSingleton<IRateLimiter, RedisTokenBucketRateLimiter>();
+
+builder.Services.AddHostedService<Worker>();
+
+
+var host = builder.Build();
+host.Run();
