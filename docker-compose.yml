@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   tgverifbot:
-    image: ghcr.io/opaimon/tgverifbot:latest
+    image: ghcr.io/opaimon/tgverifbot:main
     restart: unless-stopped
     environment:
       - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
