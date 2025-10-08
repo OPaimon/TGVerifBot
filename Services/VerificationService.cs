@@ -92,6 +92,16 @@ public class VerificationService
         if (status.HasValue && status.ToString().Equals("Cooldown", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogWarning("User {UserId} is in cooldown period in chat {ChatId}, ignoring callback.", user.Id, chatId);
+            var cooldownText = "❌ 你在冷却时间内，请稍后再试。";
+            await _dispatcher.DispatchAsync(new EditMessageJob(job.Message, cooldownText));
+            return;
+        }
+
+        if (!status.HasValue)
+        {
+            _logger.LogWarning("No active verification found for user {UserId} in chat {ChatId}, ignoring callback.", user.Id, chatId);
+            var outdateText = "❌ 验证以过期，入群请求已被拒绝。";
+            await _dispatcher.DispatchAsync(new EditMessageJob(job.Message, outdateText));
             return;
         }
 
