@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using TelegramVerificationBot.Configuration;
 using TelegramVerificationBot.Dispatcher;
 using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Tasks;
@@ -14,26 +15,14 @@ namespace TelegramVerificationBot;
 /// Manages all interactions with the Telegram API (both Bot API and Client API via WTelegram).
 /// It listens for updates, dispatches them to the appropriate jobs, and sends messages back to users.
 /// </summary>
-public class TelegramService : IDisposable
-{
-    private Bot? _bot;
-    private Microsoft.Data.Sqlite.SqliteConnection? _dbConnection;
-    private readonly FunctionalTaskDispatcher _dispatcher;
-    private readonly ILogger<TelegramService> _logger;
-    private readonly IOptions<TelegramSettings> _settings;
-    private readonly IConfiguration _configuration;
-
-    public TelegramService(
+public class TelegramService(
         ILogger<TelegramService> logger,
         FunctionalTaskDispatcher dispatcher,
         IOptions<TelegramSettings> settings,
-        IConfiguration configuration)
-    {
-        _logger = logger;
-        _dispatcher = dispatcher;
-        _settings = settings; // Save the configuration
-        _configuration = configuration;
-    }
+        IConfiguration configuration) : IDisposable
+{
+    private Bot? _bot;
+    private Microsoft.Data.Sqlite.SqliteConnection? _dbConnection;
 
     /// <summary>
     /// Initializes the WTelegram Bot client if it hasn't been already.
@@ -43,14 +32,14 @@ public class TelegramService : IDisposable
     {
         if (_bot != null) return; // Prevent re-initialization
 
-        var sqliteConnectionString = _configuration.GetConnectionString("Sqlite");
+        var sqliteConnectionString = configuration.GetConnectionString("Sqlite");
         _dbConnection = new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString);
         _dbConnection.Open();
-        _bot = new Bot(botToken: _settings.Value.BotToken, apiId: int.Parse(_settings.Value.ApiId), apiHash: _settings.Value.ApiHash, dbConnection: _dbConnection);
+        _bot = new Bot(botToken: settings.Value.BotToken, apiId: int.Parse(settings.Value.ApiId), apiHash: settings.Value.ApiHash, dbConnection: _dbConnection);
         _bot.OnMessage += OnMessage;
         _bot.OnError += async (e, s) =>
         {
-            _logger.LogError(e, "WTelegram error: {State}", s);
+            logger.LogError(e, "WTelegram error: {State}", s);
             await Task.CompletedTask;
         };
         _bot.OnUpdate += OnUpdate;
@@ -61,17 +50,24 @@ public class TelegramService : IDisposable
     /// </summary>
     private async Task OnUpdate(WTelegram.Types.Update update)
     {
-        if (update.ChatJoinRequest is not null)
+        switch (update)
         {
-            _logger.LogInformation("New chat join request from user {UserId} for chat {ChatId}", update.ChatJoinRequest.From.Id, update.ChatJoinRequest.Chat.Id);
-            await _dispatcher.DispatchAsync(new StartVerificationJob(update.ChatJoinRequest));
-            return;
-        }
-        else if (update.CallbackQuery is not null)
-        {
-            _logger.LogInformation("New callback query from user {UserId} with data: {Data}", update.CallbackQuery.From.Id, update.CallbackQuery.Data);
-            await _dispatcher.DispatchAsync(new ProcessQuizCallbackJob(update.CallbackQuery.Data, update.CallbackQuery.From, update.CallbackQuery.Message));
-            return;
+            case { ChatJoinRequest: not null } cjr:
+                logger.LogInformation("New chat join request from user {UserId} for chat {ChatId}", cjr.ChatJoinRequest.From.Id, cjr.ChatJoinRequest.Chat.Id);
+                await dispatcher.DispatchAsync(new StartVerificationJob(cjr.ChatJoinRequest));
+                break;
+            case { CallbackQuery: not null } cq:
+                if (cq.CallbackQuery.Data == null || cq.CallbackQuery.Message == null)
+                {
+                    logger.LogWarning("Received callback query with null data or message from user {UserId}", cq.CallbackQuery.From.Id);
+                    return;
+                }
+                logger.LogInformation("New callback query from user {UserId} with data: {Data}", cq.CallbackQuery.From.Id, cq.CallbackQuery.Data);
+                await dispatcher.DispatchAsync(new ProcessQuizCallbackJob(cq.CallbackQuery.Data, cq.CallbackQuery.From, cq.CallbackQuery.Message));
+                break;
+            default:
+                logger.LogInformation("Received unhandled update type: {UpdateType}", update.GetType().Name);
+                break;
         }
     }
 
@@ -83,13 +79,13 @@ public class TelegramService : IDisposable
         switch (msg)
         {
             case WTelegram.Types.Message { Text: "/ping" } when msg.Type == MessageType.Text:
-                _logger.LogInformation("Received 'Ping' from chat {ChatId}", msg.Chat.Id);
+                logger.LogInformation("Received 'Ping' from chat {ChatId}", msg.Chat.Id);
                 // This can be used for a simple health check.
                 var pingJob = new RespondToPingJob(msg.Chat);
-                await _dispatcher.DispatchAsync(pingJob);
+                await dispatcher.DispatchAsync(pingJob);
                 break;
             default:
-                _logger.LogInformation("Received message of type {MessageType} from chat {ChatId}", msg.Type, msg.Chat.Id);
+                logger.LogInformation("Received message of type {MessageType} from chat {ChatId}", msg.Type, msg.Chat.Id);
                 break;
         }
     }
@@ -110,8 +106,8 @@ public class TelegramService : IDisposable
         {
             try
             {
-                var me = await _bot.GetMe();
-                _logger.LogInformation("Logged in as {User} (id {Id})", me.FirstName, me.Id);
+                var me = await _bot!.GetMe();
+                logger.LogInformation("Logged in as {User} (id {Id})", me.FirstName, me.Id);
 
                 // WTelegram's client handles the update loop internally, so we just wait indefinitely.
                 await Task.Delay(-1, stoppingToken);
@@ -123,13 +119,13 @@ public class TelegramService : IDisposable
             }
             catch (Exception ex)
             {
-                 _logger.LogError(ex, "An unhandled exception occurred in the Telegram listener. The application might be unstable.");
+                 logger.LogError(ex, "An unhandled exception occurred in the Telegram listener. The application might be unstable.");
                  // Depending on the exception, a reconnect strategy could be implemented here.
                  // For now, we log and let the hosting environment handle restarts if configured.
             }
         }
 
-        _logger.LogInformation("Disconnecting from Telegram...");
+        logger.LogInformation("Disconnecting from Telegram...");
     }
 
     /// <summary>
@@ -138,8 +134,8 @@ public class TelegramService : IDisposable
     public async Task RespondToPingAsync(RespondToPingJob job)
     {
         var chat = job.Chat;
-        _logger.LogInformation("Responding to Ping from chat {ChatId}", chat.Id);
-        await _bot.SendMessage(chat, "Pong");
+        logger.LogInformation("Responding to Ping from chat {ChatId}", chat.Id);
+        await _bot!.SendMessage(chat, "Pong");
     }
 
     /// <summary>
@@ -152,7 +148,7 @@ public class TelegramService : IDisposable
         var user = job.User;
         var userChat = job.UserChatId;
         var optionsWithTokens = job.OptionsWithTokens;
-        _logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
+        logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
 
         var buttons = optionsWithTokens
             .Select((item, index) => new InlineKeyboardButton(item.Option)
@@ -166,7 +162,7 @@ public class TelegramService : IDisposable
         var chatTitle = string.IsNullOrEmpty(chat.Title) ? chat.Id.ToString() : chat.Title;
         var replyMessage = $"*欢迎 {MentionMarkdownV2(user.FirstName, user.Id)} 来到 {chatTitle} ！* \n问题: {question}";
 
-        await _bot.SendMessage(userChat, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
+        await _bot!.SendMessage(userChat, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
     }
 
     /// <summary>
@@ -174,10 +170,10 @@ public class TelegramService : IDisposable
     /// </summary>
     public async Task HandleChatJoinRequestAsync(ChatJoinRequestJob job)
     {
-        var chat = await _bot.GetChat(job.Chat);
+        var chat = await _bot!.GetChat(job.Chat);
         var user = job.User;
         var result = await _bot.Client.Messages_HideChatJoinRequest(chat, user.TLUser(), job.Approve);
-        _logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chat.Id, job.Approve);
+        logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chat.Id, job.Approve);
     }
 
     /// <summary>
@@ -189,8 +185,8 @@ public class TelegramService : IDisposable
         var chat = message.Chat;
         var messageId = message.MessageId;
         var newText = job.NewText;
-        var result = await _bot.EditMessageText(chat, messageId, newText);
-        _logger.LogInformation("Edited message {MessageId} in chat {ChatId}", messageId, chat.Id);
+        var result = await _bot!.EditMessageText(chat, messageId, newText);
+        logger.LogInformation("Edited message {MessageId} in chat {ChatId}", messageId, chat.Id);
     }
 
     /// <summary>

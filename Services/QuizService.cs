@@ -22,10 +22,12 @@ public class QuizService : IAsyncDisposable, IDisposable
     private readonly ConcurrentDictionary<int, Quiz> _quizzes = new();
     private readonly HashSet<int> _deletedIds = new();
     private readonly SemaphoreSlim _fileLock = new(1, 1);
+    private readonly AppJsonSerializerContext _jsonContext;
     private bool _disposed;
 
-    public QuizService(ILogger<QuizService> logger, IConfiguration configuration)
+    public QuizService(ILogger<QuizService> logger, IConfiguration configuration, AppJsonSerializerContext jsonContext)
     {
+        _jsonContext = jsonContext;
         _logger = logger;
         // allow file path from configuration, else default to "quizzes.json" in app base
         _filePath = configuration?["QuizFilePath"] ?? Path.Combine(AppContext.BaseDirectory, "quizzes.json");
@@ -41,14 +43,14 @@ public class QuizService : IAsyncDisposable, IDisposable
                 var directory = Path.GetDirectoryName(_filePath);
                 if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                     Directory.CreateDirectory(directory);
-                File.WriteAllText(_filePath, JsonSerializer.Serialize(sample, JsonOptions));
+                File.WriteAllText(_filePath, JsonSerializer.Serialize(sample, _jsonContext.ListQuiz));
                 foreach (var q in sample)
                     _quizzes[q.Id] = q;
             }
             else
             {
                 var text = File.ReadAllText(_filePath);
-                var list = JsonSerializer.Deserialize<List<Quiz>>(text, JsonOptions) ?? new List<Quiz>();
+                var list = JsonSerializer.Deserialize(text, _jsonContext.ListQuiz) ?? new List<Quiz>();
                 foreach (var q in list)
                     _quizzes[q.Id] = q;
             }
@@ -83,7 +85,7 @@ public class QuizService : IAsyncDisposable, IDisposable
         if (quiz.Id == 0)
         {
             var next = _quizzes.Keys.DefaultIfEmpty(0).Max() + 1;
-            quiz.Id = next;
+            quiz = quiz with { Id = next };
         }
 
         _quizzes[quiz.Id] = CloneQuiz(quiz);
@@ -110,10 +112,12 @@ public class QuizService : IAsyncDisposable, IDisposable
 
     public Task<Quiz?> GetRandomAsync()
     {
-        var values = _quizzes.Values.ToArray();
-        if (values.Length == 0) return Task.FromResult<Quiz?>(null);
-        var idx = Random.Shared.Next(values.Length);
-        return Task.FromResult<Quiz?>(CloneQuiz(values[idx]));
+        if (_quizzes.IsEmpty) return Task.FromResult<Quiz?>(null);
+
+        int count = _quizzes.Count;
+        var idx = Random.Shared.Next(count);
+        var randomQuiz = _quizzes.Values.ElementAt(idx);
+        return Task.FromResult<Quiz?>(CloneQuiz(randomQuiz));
     }
 
     // Compatibility shim for older name used in codebase
@@ -140,7 +144,7 @@ public class QuizService : IAsyncDisposable, IDisposable
                 try
                 {
                     var text = await File.ReadAllTextAsync(_filePath);
-                    onDisk = JsonSerializer.Deserialize<List<Quiz>>(text, JsonOptions) ?? new List<Quiz>();
+                    onDisk = JsonSerializer.Deserialize(text, _jsonContext.ListQuiz) ?? new List<Quiz>();
                 }
                 catch (Exception ex)
                 {
@@ -163,7 +167,7 @@ public class QuizService : IAsyncDisposable, IDisposable
                 map[kv.Key] = CloneQuiz(kv.Value);
 
             var merged = map.Values.OrderBy(q => q.Id).ToList();
-            var outText = JsonSerializer.Serialize(merged, JsonOptions);
+            var outText = JsonSerializer.Serialize(merged, _jsonContext.ListQuiz);
             var directory = Path.GetDirectoryName(_filePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 Directory.CreateDirectory(directory);

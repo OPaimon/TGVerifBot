@@ -2,6 +2,7 @@ using StackExchange.Redis;
 using TelegramVerificationBot;
 using TelegramVerificationBot.Configuration;
 using TelegramVerificationBot.Dispatcher;
+using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Tasks;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -41,6 +42,11 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<FunctionalTaskDisp
 
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
+if (string.IsNullOrEmpty(redisConnectionString))
+{
+    throw new Exception("Redis connection string is not configured.");
+}
+
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
     ConnectionMultiplexer.Connect(redisConnectionString)
 );
@@ -49,6 +55,8 @@ builder.Services.AddSingleton(sp =>
 
 // Register rate limiter
 builder.Services.AddSingleton<IRateLimiter, RedisTokenBucketRateLimiter>();
+
+builder.Services.AddSingleton<AppJsonSerializerContext>();
 
 builder.Services.AddHostedService<Worker>();
 

@@ -1,3 +1,4 @@
+namespace TelegramVerificationBot.Configuration;
 public class TelegramSettings
 {
     public required string BotToken { get; set; }
