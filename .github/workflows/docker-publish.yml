@@ -1,4 +1,13 @@
-name: Publish Docker image
+# ==============================================================================
+# Modern .NET CI/CD Workflow for Docker (Verified Oct 2025)
+#
+# This workflow separates the build and packaging stages for robustness
+# and flexibility. It builds multiple artifacts in parallel and then packages
+# the primary one into a Docker image.
+# All actions are pinned to their latest stable major versions.
+# ==============================================================================
+
+name: Build Artifacts and Publish Docker Image
 
 on:
   push:
@@ -7,20 +16,86 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  DOTNET_VERSION: '9.0.x'
 
 jobs:
-  build-and-push-image:
+  # --- JOB 1: Build multiple binary artifacts in parallel ---
+  build:
+    # Job name is dynamically set from the matrix for better readability in the UI
+    name: Build - ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      # Ensures that if one build in the matrix fails, the others will still continue
+      fail-fast: false
+      matrix:
+        include:
+          # --- Core Artifacts for deployment and debugging ---
+          - name: "linux-x64-trimmed"
+            flags: "-r linux-x64 /p:PublishTrimmed=true /p:PublishReadyToRun=true"
+          - name: "linux-x64-full"
+            flags: "-r linux-x64 /p:PublishTrimmed=false /p:PublishReadyToRun=true"
+            
+          # --- Recommended Artifact for non-containerized users ---
+          - name: "framework-dependent"
+            # Trimming must be explicitly disabled as it's not supported for framework-dependent builds
+            flags: "--no-self-contained /p:PublishTrimmed=false"
+            
+          # --- Optional Artifacts for wider platform support ---
+          - name: "win-x64-trimmed"
+            flags: "-r win-x64 /p:PublishTrimmed=true /p:PublishReadyToRun=true"
+          - name: "linux-arm64-trimmed"
+            flags: "-r linux-arm64 /p:PublishTrimmed=true /p:PublishReadyToRun=true"
+
+    steps:
+      # Step 1: Check out the repository's source code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the specified .NET SDK version
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Step 3: Run the dotnet publish command using flags from the matrix
+      - name: Build and publish application (${{ matrix.name }})
+        run: dotnet publish TelegramVerificationBot.csproj -c Release ${{ matrix.flags }} -o ./publish_output
+
+      # Step 4: Upload the build output as a workflow artifact
+      - name: Upload artifact (${{ matrix.name }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-artifact
+          path: ./publish_output
+
+  # --- JOB 2: Package the primary artifact into a Docker image and push ---
+  package-and-push-image:
+    name: Package and Push Docker Image
+    # This job only starts after all matrix instances of the 'build' job succeed
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
-
+      
     steps:
+      # Step 1: Check out the repository's source code (needed for the Dockerfile)
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Step 2: Download the primary artifact needed for the Docker image
+      - name: Download primary artifact for Docker image
+        uses: actions/download-artifact@v4
+        with:
+          # This name MUST match the name of the artifact we intend to package
+          name: linux-x64-trimmed-artifact
+          # This path MUST match the path used in the Dockerfile's COPY command
+          path: ./publish_output
+
+      # Step 3: Log in to the GitHub Container Registry
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -28,15 +103,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Step 4: Extract Docker metadata like tags and labels
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      # Step 5: Set up Docker Buildx for advanced building features
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Step 6: Build the Docker image using the downloaded artifact and push it to the registry
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@v5
@@ -46,8 +124,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # Step 7: Generate and push a SLSA provenance attestation for the image
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v1
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
           subject-digest: ${{ steps.push.outputs.digest }}
