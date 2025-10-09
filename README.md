@@ -10,24 +10,49 @@ This is a Telegram verification bot built with .NET, designed to verify new memb
 
 ## Deployment Guide
 
-The recommended way to deploy this project is by using Docker and Docker Compose.
+### Option 1: Deploying with Docker Compose (Recommended)
 
-### Prerequisites
+This is the easiest way to deploy the bot, as it does not require cloning the source code.
 
-- [Docker](https://www.docker.com/get-started)
-- [Docker Compose](https://docs.docker.com/compose/install/)
+1.  **Create a Project Directory**
 
-### Deploying with Docker Compose
+    Create a directory on your server where you will store the configuration and data.
+    ```bash
+    mkdir tgverifbot
+    cd tgverifbot
+    ```
 
-1.  **Clone or download the project**
+2.  **Create a `docker-compose.yml` File**
 
-2.  **Create a configuration file**
+    Create a file named `docker-compose.yml` with the following content:
+    ```yaml
+    version: '3.8'
 
-    In the project's root directory (the same directory as `docker-compose.yml`), create a file named `.env`. This file will store your sensitive configuration information.
+    services:
+      tgverifbot:
+        image: ghcr.io/opaimon/tgverifbot:main
+        pull_policy: always # Ensures you get the latest image every time you start
+        restart: unless-stopped
+        environment:
+          - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
+          - TelegramSettings__ApiId=${TELEGRAM_API_ID}
+          - TelegramSettings__ApiHash=${TELEGRAM_API_HASH}
+          - ConnectionStrings__Redis=redis:6379
+        volumes:
+          - ./data:/app/data
+        depends_on:
+          - redis
 
-3.  **Edit the `.env` file**
+      redis:
+        image: "docker.io/library/redis:alpine"
+        restart: unless-stopped
+        volumes:
+          - ./redis-data:/data
+    ```
 
-    Add the following content to the `.env` file and replace the values with your Telegram Bot information:
+3.  **Create a `.env` Configuration File**
+
+    In the same directory, create a file named `.env` to store your secrets:
 
     ```env
     # Your Telegram Bot Token
@@ -40,120 +65,60 @@ The recommended way to deploy this project is by using Docker and Docker Compose
     TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
     ```
 
-4.  **Start the services**
+4.  **Start the Services**
 
-    Open a terminal in the project root directory and run the following command to build and start the containers:
-
+    Run the following command to download the images and start the containers:
     ```bash
     docker-compose up -d
     ```
 
-    This will start the Telegram Bot and Redis services in detached mode.
+#### Managing the Service
+-   **View logs:** `docker-compose logs -f tgverifbot`
+-   **Stop the services:** `docker-compose down`
+-   **Update the bot:** `docker-compose pull` followed by `docker-compose up -d` (if you choose not to use `pull_policy`).
 
-5.  **View logs**
+---
 
-    If you need to check the bot's running logs, you can run:
+### Option 2: Deploying Pre-built Artifacts (without Docker)
+
+This method is for deploying on a Linux server without Docker, using pre-compiled executables from our CI workflow.
+
+#### 1. Download an Artifact
+
+1.  Navigate to the **Actions** tab of this GitHub repository.
+2.  Select the latest successful workflow run from the `main` branch.
+3.  Download an artifact from the "Artifacts" section.
+
+    **Choosing an Artifact:**
+
+    -   **`linux-x64-trimmed-artifact.zip` (Optimized for Size):**
+        This is the version we use to build the official Docker image. It is optimized for a small footprint using .NET's trimming and ReadyToRun features. While trimming is generally reliable, it can theoretically remove necessary code in edge cases, especially with third-party dependencies. This version is ideal for most containerized or serverless deployments.
+
+    -   **`linux-x64-full-artifact.zip` (Maximum Compatibility):**
+        This is a larger, non-trimmed version. It provides a baseline for debugging and should be used if you encounter any unexpected issues with the trimmed version, or if your operational policy prioritizes guaranteed compatibility over deployment size.
+
+    -   **`framework-dependent-artifact.zip`:**
+        Requires the .NET 9.0 runtime to be installed on the server.
+
+#### 2. Deploy Files
+
+1.  Unzip the downloaded artifact.
+2.  Copy the contents of the unzipped directory to a location on your server, for example, `/opt/tgverifbot`.
 
     ```bash
-    docker-compose logs -f tgverifbot
+    # Make sure the destination directory exists
+    sudo mkdir -p /opt/tgverifbot
+    
+    # Unzip directly to the target location
+    unzip linux-x64-*.zip -d /opt/tgverifbot
     ```
-
-6.  **Stop the services**
-
-    To stop the services, you can run:
-
+3.  You also need to copy over your data files, for example `data/quizzes.json`.
     ```bash
-    docker-compose down
+    sudo mkdir -p /opt/tgverifbot/data
+    sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
     ```
 
-## Manual Build
-
-If you prefer to build and run the application without Docker, you can follow these steps.
-
-### Prerequisites
-
-- [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) (or the version specified in `TelegramVerificationBot.csproj`)
-- [Redis](https://redis.io/docs/getting-started/installation/) running on a reachable host.
-
-### Configuration
-
-1.  **Edit `appsettings.json`:**
-    Open the `appsettings.json` file and fill in your Telegram bot details under `TelegramSettings`:
-
-    ```json
-    "TelegramSettings": {
-      "BotToken": "YOUR_BOT_TOKEN_HERE",
-      "ApiId": "YOUR_API_ID_HERE",
-      "ApiHash": "YOUR_API_HASH_HERE"
-    },
-    ```
-
-2.  **Configure Connection Strings:**
-    Ensure the `ConnectionStrings.Redis` value in `appsettings.json` points to your Redis instance. The default is `localhost:6379`.
-
-    ```json
-    "ConnectionStrings": {
-      "Redis": "localhost:6379",
-      "Sqlite": "Data Source=./data/TelegramVerificationBot.sqlite"
-    },
-    ```
-
-3.  **Update Storage Paths:**
-    **Important:** The default paths for the SQLite database (`ConnectionStrings.Sqlite`) and quiz file (`QuizFilePath`) are set for Docker (`/app/data/...`). You **must** update these in `appsettings.json` to a valid path on your system, for example:
-    ```json
-    "ConnectionStrings": {
-      "Redis": "localhost:6379",
-      "Sqlite": "Data Source=./data/TelegramVerificationBot.sqlite"
-    },
-    "QuizFilePath": "./data/quizzes.json"
-    ```
-
-### Running the Application
-
-1.  **Restore Dependencies:**
-    Open a terminal in the project root and run:
-    ```bash
-    dotnet restore
-    ```
-
-2.  **Run the project:**
-    ```bash
-    dotnet run --project TelegramVerificationBot.csproj
-    ```
-
-The bot should now be running and connected to Telegram.
-
-## Production Deployment (without Docker)
-
-This guide explains how to run the bot as a systemd service on a Linux server.
-
-### 1. Release Build
-
-First, publish the application in `Release` mode. This command compiles the application and its dependencies into a self-contained directory.
-
-```bash
-# This will create a publish/ directory in the project root
-dotnet publish -c Release -o ./publish
-```
-
-### 2. Deploy Files
-
-Copy the contents of the `./publish` directory to a location on your server, for example, `/opt/tgverifbot`.
-
-```bash
-# Make sure the destination directory exists
-sudo mkdir -p /opt/tgverifbot
-
-sudo cp -r ./publish/* /opt/tgverifbot/
-```
-
-You also need to copy over any data files, like your quizzes.json and the data directory.
-
-```bash
-sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
-```
-
-### 3. Create Environment Configuration
+#### 3. Create Environment Configuration
 
 The systemd service will load configuration from an environment file. Create a directory and a file for it:
 
@@ -175,7 +140,7 @@ ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationB
 QuizFilePath=/opt/tgverifbot/data/quizzes.json
 ```
 
-### 4. Setup Systemd Service
+#### 4. Setup Systemd Service
 
 1.  Copy the example `tgverifbot.service` file (included in this repository) to the systemd directory:
 
@@ -195,28 +160,39 @@ QuizFilePath=/opt/tgverifbot/data/quizzes.json
     sudo systemctl enable --now tgverifbot.service
     ```
 
-### 5. Manage the Service
+#### 5. Manage the Service
 
--   **Check the status:**
+-   **Check the status:** `sudo systemctl status tgverifbot.service`
+-   **View logs in real-time:** `sudo journalctl -u tgverifbot.service -f`
+-   **Stop the service:** `sudo systemctl stop tgverifbot.service`
+-   **Restart the service:** `sudo systemctl restart tgverifbot.service`
 
+---
+
+## For Developers: Building from Source
+
+This section is for those who wish to contribute or run the application in a local development environment.
+
+### Prerequisites
+
+- [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [Redis](https://redis.io/docs/getting-started/installation/) running on a reachable host.
+
+### Configuration
+
+1.  **Use User Secrets:** For local development, it's best to use .NET's User Secrets to store your API keys. Initialize it by running this in the project root:
     ```bash
-    sudo systemctl status tgverifbot.service
+    dotnet user-secrets init
     ```
-
--   **View logs in real-time:**
-
+2.  **Set your secrets:**
     ```bash
-    sudo journalctl -u tgverifbot.service -f
+    dotnet user-secrets set "TelegramSettings:BotToken" "YOUR_BOT_TOKEN_HERE"
+    dotnet user-secrets set "TelegramSettings:ApiId" "YOUR_API_ID_HERE"
+    dotnet user-secrets set "TelegramSettings:ApiHash" "YOUR_API_HASH_HERE"
     ```
+3.  **Ensure `appsettings.Development.json` is configured** for local paths and your Redis instance (default is `localhost:6379`).
 
--   **Stop the service:**
+### Running the Application
 
-    ```bash
-    sudo systemctl stop tgverifbot.service
-    ```
-
--   **Restart the service:**
-
-    ```bash
-    sudo systemctl restart tgverifbot.service
-    ```
+1.  **Restore Dependencies:** `dotnet restore`
+2.  **Run the project:** `dotnet run`
