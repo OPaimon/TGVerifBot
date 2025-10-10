@@ -56,15 +56,18 @@ public class TelegramService(
                 logger.LogInformation("New chat join request from user {UserId} for chat {ChatId}", cjr.ChatJoinRequest.From.Id, cjr.ChatJoinRequest.Chat.Id);
                 await dispatcher.DispatchAsync(new StartVerificationJob(cjr.ChatJoinRequest));
                 break;
-            case { CallbackQuery: not null } cq:
-                if (cq.CallbackQuery.Data == null || cq.CallbackQuery.Message == null)
-                {
-                    logger.LogWarning("Received callback query with null data or message from user {UserId}", cq.CallbackQuery.From.Id);
-                    return;
-                }
+            
+            // REFACTOR 1: Combine null-check into the pattern match for a clearer, more declarative style.
+            case { CallbackQuery: { Data: not null, Message: not null } } cq:
                 logger.LogInformation("New callback query from user {UserId} with data: {Data}", cq.CallbackQuery.From.Id, cq.CallbackQuery.Data);
                 await dispatcher.DispatchAsync(new ProcessQuizCallbackJob(cq.CallbackQuery.Data, cq.CallbackQuery.From, cq.CallbackQuery.Message));
                 break;
+
+            case { CallbackQuery: not null } cq:
+                // This case now specifically handles callbacks with missing data/message.
+                logger.LogWarning("Received callback query with null data or message from user {UserId}", cq.CallbackQuery.From.Id);
+                break;
+
             default:
                 logger.LogInformation("Received unhandled update type: {UpdateType}", update.GetType().Name);
                 break;
@@ -143,26 +146,19 @@ public class TelegramService(
     /// </summary>
     public async Task SendQuizAsync(SendQuizJob job)
     {
-        var chat = job.Chat;
-        var question = job.Question;
-        var user = job.User;
-        var userChat = job.UserChatId;
-        var optionsWithTokens = job.OptionsWithTokens;
+        var (chat, question, user, userChatId, optionsWithTokens) = 
+            (job.Chat, job.Question, job.User, job.UserChatId, job.OptionsWithTokens);
+        
         logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
 
         var buttons = optionsWithTokens
-            .Select((item, index) => new InlineKeyboardButton(item.Option)
-            {
-                // The callback data is structured as <chatId>_<token>
-                CallbackData = chat.Id.ToString()+ "_" + item.Token
-            })
+            .Select(item => CreateQuizButton(item.Option, chat.Id, item.Token)) // REFACTOR 2: Use helper
             .ToArray();
 
         var inlineKeyboard = new InlineKeyboardMarkup(buttons);
-        var chatTitle = string.IsNullOrEmpty(chat.Title) ? chat.Id.ToString() : chat.Title;
-        var replyMessage = $"*欢迎 {MentionMarkdownV2(user.FirstName, user.Id)} 来到 {chatTitle} ！* \n问题: {question}";
+        var replyMessage = FormatWelcomeMessage(user, chat, question); // REFACTOR 3: Use helper
 
-        await _bot!.SendMessage(userChat, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
+        await _bot!.SendMessage(userChatId, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
     }
 
     /// <summary>
@@ -188,13 +184,34 @@ public class TelegramService(
         var result = await _bot!.EditMessageText(chat, messageId, newText);
         logger.LogInformation("Edited message {MessageId} in chat {ChatId}", messageId, chat.Id);
     }
+    
+    // --- Helper Functions ---
 
     /// <summary>
     /// Formats a user mention using MarkdownV2 style for Telegram.
     /// </summary>
-    /// <param name="username">The user's display name.</param>
-    /// <param name="userid">The user's unique Telegram ID.</param>
-    /// <returns>A MarkdownV2 formatted string for mentioning the user.</returns>
-    public static String MentionMarkdownV2(string username, long userid) =>
+    public static string MentionMarkdownV2(string username, long userid) =>
         $"[{username}](tg://user?id={userid})";
+
+    /// <summary>
+    /// Creates an inline keyboard button for a quiz option.
+    /// </summary>
+    private static InlineKeyboardButton CreateQuizButton(string optionText, long chatId, string token)
+    {
+        return new InlineKeyboardButton(optionText)
+        {
+            // The callback data is structured as <chatId>_<token>
+            CallbackData = $"{chatId}_{token}"
+        };
+    }
+
+    /// <summary>
+    /// Formats the welcome message sent to a user with a quiz question.
+    /// </summary>
+    private static string FormatWelcomeMessage(Telegram.Bot.Types.User user, Telegram.Bot.Types.Chat chat, string question)
+    {
+        var chatTitle = string.IsNullOrEmpty(chat.Title) ? chat.Id.ToString() : chat.Title;
+        var mention = MentionMarkdownV2(user.FirstName, user.Id);
+        return $"*欢迎 {mention} 来到 {chatTitle} ！* \n问题: {question}";
+    }
 }

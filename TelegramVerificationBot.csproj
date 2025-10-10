@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-TelegramVerificationBot-c7fe5108-7792-4bd8-b9be-871d7844d766</UserSecretsId>
     <PublishSingleFile>true</PublishSingleFile>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
 
   <ItemGroup>

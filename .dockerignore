@@ -1,0 +1,16 @@
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.vs
+**/.vscode
+**/.github
+**/bin
+**/obj
+**/Dockerfile
+**/docker-compose.yml
+**/docker-compose.*.yml
+**/.env
+**/tgverifbot.service
+**/date
+**/redis-data

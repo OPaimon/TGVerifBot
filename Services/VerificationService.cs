@@ -101,7 +101,9 @@ public class VerificationService(ILogger<VerificationService> logger, Functional
         {
             logger.LogWarning("No active verification found for user {UserId} in chat {ChatId}, ignoring callback.", user.Id, chatId);
             var outdateText = "❌ 验证以过期，入群请求已被拒绝。";
-            await dispatcher.DispatchAsync(new EditMessageJob(job.Message, outdateText));
+            var joinRequestTask_ = dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, false));
+            var editMessageTask_ = dispatcher.DispatchAsync(new EditMessageJob(job.Message, outdateText));
+            await Task.WhenAll(joinRequestTask_, editMessageTask_);
             return;
         }
 
@@ -139,11 +141,10 @@ public class VerificationService(ILogger<VerificationService> logger, Functional
             }
         }
 
-        await dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, approve));
-        logger.LogInformation("Handled verification result for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chatId, approve);
+        var joinRequestTask = dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, approve));
+        var editMessageTask = dispatcher.DispatchAsync(new EditMessageJob(job.Message, approve ? "✅ 验证通过！欢迎加入！" : "❌ 验证失败，入群请求已被拒绝。"));
 
-        var newText = approve ? "✅ 验证通过！欢迎加入！" : "❌ 验证失败，入群请求已被拒绝。";
-        await dispatcher.DispatchAsync(new EditMessageJob(job.Message, newText));
-        logger.LogInformation("Edited verification message for user {UserId} in chat {ChatId}", user.Id, chatId);
+        await Task.WhenAll(joinRequestTask, editMessageTask);
+        logger.LogInformation("Handled verification result for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chatId, approve);
     }
 }

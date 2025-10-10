@@ -1,10 +1,24 @@
-FROM mcr.microsoft.com/dotnet/runtime-deps:9.0
+ARG DOTNET_VERSION=9.0
 
-RUN useradd --create-home appuser
-USER appuser
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
+WORKDIR /source
 
+COPY --link *.csproj .
+RUN dotnet restore TelegramVerificationBot.csproj -r linux-x64 /p:PublishReadyToRun=true
+
+COPY --link . .
+
+RUN dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained --no-restore /p:PublishTrimmed=true /p:PublishReadyToRun=true -o /app
+
+
+FROM mcr.microsoft.com/dotnet/runtime-deps:${DOTNET_VERSION}
 WORKDIR /app
 
-COPY --chown=appuser:appuser ./publish_output .
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 
+COPY --link --from=build /app .
+
+RUN chown -R appuser:appgroup /app
+
+USER appuser
 ENTRYPOINT ["./TelegramVerificationBot"]

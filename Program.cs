@@ -6,8 +6,11 @@ using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Tasks;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.Configure<TelegramSettings>(builder.Configuration.GetSection("TelegramSettings"));
-builder.Services.Configure<RateLimitingSettings>(builder.Configuration.GetSection("RateLimiting"));
+builder.Services.AddOptions<TelegramSettings>()
+    .BindConfiguration("TelegramSettings");
+
+builder.Services.AddOptions<RateLimitingSettings>()
+    .BindConfiguration("RateLimiting");
 
 builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddSingleton<VerificationService>();
