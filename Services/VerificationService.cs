@@ -128,7 +128,7 @@ public class VerificationService(ILogger<VerificationService> logger, Functional
         {
             logger.LogWarning("No active verification found for user {UserId} in chat {ChatId}, ignoring callback.", user.Id, chatId);
             var outdateText = "❌ 验证已过期，入群请求已被拒绝。";
-            var joinRequestTask = dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, false));
+            var joinRequestTask = dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, false));
             var editMessageTask = dispatcher.DispatchAsync(new EditMessageJob(message, outdateText));
             await Task.WhenAll(joinRequestTask, editMessageTask);
             return true; // 流程已处理，应终止
@@ -173,7 +173,7 @@ public class VerificationService(ILogger<VerificationService> logger, Functional
     {
         var resultText = approve ? "✅ 验证通过！欢迎加入！" : "❌ 验证失败，入群请求已被拒绝。";
 
-        var joinRequestTask = dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, approve));
+        var joinRequestTask = dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, approve));
         var editMessageTask = dispatcher.DispatchAsync(new EditMessageJob(message, resultText));
 
         await Task.WhenAll(joinRequestTask, editMessageTask);

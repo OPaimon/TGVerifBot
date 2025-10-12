@@ -1,213 +1,151 @@
-using System.Collections.Concurrent;
-using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Threading;
-using System.Threading.Tasks;
+using CSharpFunctionalExtensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
 using TelegramVerificationBot.Models;
 
 namespace TelegramVerificationBot;
 
 /// <summary>
-/// JSON-backed quiz repository/service.
-/// Loads quizzes from a JSON file on construction, provides thread-safe CRUD and random selection,
-/// and merges/persists changes back to the file when disposed.
+/// A thread-safe, reloadable, in-memory provider for quizzes.
+/// It loads quizzes from a JSON file at startup and provides a method to hot-reload them.
 /// </summary>
-public class QuizService : IAsyncDisposable, IDisposable
+public class QuizService
 {
     private readonly ILogger<QuizService> _logger;
     private readonly string _filePath;
-    private readonly ConcurrentDictionary<int, Quiz> _quizzes = new();
-    private readonly HashSet<int> _deletedIds = new();
-    private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly AppJsonSerializerContext _jsonContext;
-    private bool _disposed;
+    private readonly object _lock = new object();
 
-    public QuizService(ILogger<QuizService> logger, IConfiguration configuration, AppJsonSerializerContext jsonContext)
+    private IReadOnlyList<Quiz> _quizzes;
+
+    // Constructor is private to enforce creation via the factory method.
+    private QuizService(
+        ILogger<QuizService> logger,
+        string filePath,
+        AppJsonSerializerContext jsonContext,
+        IReadOnlyList<Quiz> initialQuizzes)
     {
-        _jsonContext = jsonContext;
         _logger = logger;
-        // allow file path from configuration, else default to "quizzes.json" in app base
-        _filePath = configuration?["QuizFilePath"] ?? Path.Combine(AppContext.BaseDirectory, "data/quizzes.json");
-        // If file missing, create a default file with a sample quiz so startup has at least one question.
-        try
+        _filePath = filePath;
+        _jsonContext = jsonContext;
+        _quizzes = initialQuizzes;
+    }
+
+    /// <summary>
+    /// Safely creates an instance of QuizService by loading quizzes from the configured file path.
+    /// </summary>
+    public static async Task<Result<QuizService, string>> CreateAsync(
+        ILogger<QuizService> logger,
+        IConfiguration configuration,
+        AppJsonSerializerContext jsonContext)
+    {
+        var filePath = configuration?["QuizFilePath"] ?? Path.Combine(AppContext.BaseDirectory, "data/quizzes.json");
+
+        var loadResult = await LoadQuizzesFromFileAsync(filePath, jsonContext, logger);
+
+        return loadResult.Map(quizzes => new QuizService(logger, filePath, jsonContext, quizzes));
+    }
+
+    /// <summary>
+    /// Gets a random quiz from the in-memory list in a thread-safe manner.
+    /// </summary>
+    /// <returns>A Maybe containing a Quiz, or None if no quizzes are available.</returns>
+    public Maybe<Quiz> GetRandomQuiz()
+    {
+        lock (_lock)
         {
-            if (!File.Exists(_filePath))
+            if (_quizzes.Count == 0)
             {
-                var sample = new List<Quiz>
-                {
-                    new Quiz(1, "What is the capital of France?", new List<string>{"Berlin","Madrid","Paris","Rome"}, 2)
-                };
-                var directory = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                    Directory.CreateDirectory(directory);
-                File.WriteAllText(_filePath, JsonSerializer.Serialize(sample, _jsonContext.ListQuiz));
-                foreach (var q in sample)
-                    _quizzes[q.Id] = q;
+                return Maybe<Quiz>.None;
             }
-            else
-            {
-                var text = File.ReadAllText(_filePath);
-                var list = JsonSerializer.Deserialize(text, _jsonContext.ListQuiz) ?? new List<Quiz>();
-                foreach (var q in list)
-                    _quizzes[q.Id] = q;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to load or create quizzes file at {path}", _filePath);
+
+            var randomQuiz = _quizzes[Random.Shared.Next(_quizzes.Count)];
+            return Maybe.From(randomQuiz);
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-    };
-
-    // Contract: methods are async and thread-safe. Ids are ints and must be unique.
-
-    public Task<List<Quiz>> GetAllAsync()
-    {
-        return Task.FromResult(_quizzes.Values.Select(CloneQuiz).ToList());
-    }
-
-    public Task<Quiz?> GetByIdAsync(int id)
-    {
-        return Task.FromResult(_quizzes.TryGetValue(id, out var q) ? CloneQuiz(q) : null);
-    }
-
-    public Task<Quiz> CreateAsync(Quiz quiz)
-    {
-        // assign id if empty (0) -> pick one greater than max
-        if (quiz.Id == 0)
-        {
-            var next = _quizzes.Keys.DefaultIfEmpty(0).Max() + 1;
-            quiz = quiz with { Id = next };
-        }
-
-        _quizzes[quiz.Id] = CloneQuiz(quiz);
-        return Task.FromResult(CloneQuiz(quiz));
-    }
-
-    public Task<bool> UpdateAsync(Quiz quiz)
-    {
-        if (!_quizzes.ContainsKey(quiz.Id))
-            return Task.FromResult(false);
-
-        _quizzes[quiz.Id] = CloneQuiz(quiz);
-        return Task.FromResult(true);
-    }
-
-    public Task<bool> DeleteAsync(int id)
-    {
-        var removed = _quizzes.TryRemove(id, out _);
-        if (removed)
-            lock (_deletedIds)
-                _deletedIds.Add(id);
-        return Task.FromResult(removed);
-    }
-
-    public Task<Quiz?> GetRandomAsync()
-    {
-        if (_quizzes.IsEmpty) return Task.FromResult<Quiz?>(null);
-
-        int count = _quizzes.Count;
-        var idx = Random.Shared.Next(count);
-        var randomQuiz = _quizzes.Values.ElementAt(idx);
-        return Task.FromResult<Quiz?>(CloneQuiz(randomQuiz));
-    }
-
-    // Compatibility shim for older name used in codebase
+    /// <summary>
+    /// Backwards-compatibility shim for existing code that expects a Task that throws on failure.
+    /// </summary>
     public Task<Quiz> GetQuizRandomAsync()
     {
-        var task = GetRandomAsync();
-        return task.ContinueWith(t => t.Result ?? throw new InvalidOperationException("No quizzes available"), TaskScheduler.Current);
+        return GetRandomQuiz().ToResult("No quizzes available.")
+            .Match(
+                onSuccess: Task.FromResult,
+                onFailure: error => Task.FromException<Quiz>(new InvalidOperationException(error))
+            );
     }
 
-    private static Quiz CloneQuiz(Quiz q)
+    /// <summary>
+    /// Hot-reloads the quiz data from the source file.
+    /// This operation is atomic and thread-safe.
+    /// </summary>
+    /// <returns>A Result indicating if the reload was successful.</returns>
+    public async Task<Result> ReloadQuizzesAsync()
     {
-        return new Quiz(q.Id, q.Question, new List<string>(q.Options), q.CorrectOptionIndex);
+        _logger.LogInformation("Attempting to hot-reload quizzes from {FilePath}", _filePath);
+
+        var loadResult = await LoadQuizzesFromFileAsync(_filePath, _jsonContext, _logger);
+
+        if (loadResult.IsFailure)
+        {
+            _logger.LogWarning("Quiz reload failed: {Error}. The existing quiz set will be kept.", loadResult.Error);
+            return Result.Failure(loadResult.Error);
+        }
+
+        lock (_lock)
+        {
+            _quizzes = loadResult.Value;
+        }
+
+        _logger.LogInformation("Successfully reloaded {Count} quizzes.", loadResult.Value.Count);
+        return Result.Success();
     }
 
-    // Merge and persist changes to file. Strategy: load on-disk list, apply in-memory changes (adds/updates/deletes), then write back.
-    private async Task PersistAsync()
+    // Shared helper for loading data from the JSON file.
+    private static async Task<Result<IReadOnlyList<Quiz>, string>> LoadQuizzesFromFileAsync(
+        string filePath,
+        AppJsonSerializerContext jsonContext,
+        ILogger logger)
     {
-        await _fileLock.WaitAsync();
         try
         {
-            List<Quiz> onDisk = new();
-            if (File.Exists(_filePath))
+            if (!File.Exists(filePath))
             {
-                try
+                logger.LogWarning("Quiz file not found at {FilePath}. Creating a default file with one sample quiz.", filePath);
+                var sample = new List<Quiz>
                 {
-                    var text = await File.ReadAllTextAsync(_filePath);
-                    onDisk = JsonSerializer.Deserialize(text, _jsonContext.ListQuiz) ?? new List<Quiz>();
-                }
-                catch (Exception ex)
+                    new Quiz(1, "What is the capital of France?", new List<string> { "Berlin", "Madrid", "Paris", "Rome" }, 2)
+                };
+                var directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 {
-                    _logger.LogWarning(ex, "Failed to read/deserialize existing quiz file {path}, starting fresh", _filePath);
-                    onDisk = new List<Quiz>();
+                    Directory.CreateDirectory(directory);
                 }
+                await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(sample, jsonContext.ListQuiz));
+                return Result.Success<IReadOnlyList<Quiz>, string>(sample);
             }
 
-            var map = onDisk.ToDictionary(q => q.Id);
+            var text = await File.ReadAllTextAsync(filePath);
+            var quizzes = JsonSerializer.Deserialize<List<Quiz>>(text, jsonContext.ListQuiz);
 
-            // Apply deletions
-            lock (_deletedIds)
+            if (quizzes == null)
             {
-                foreach (var id in _deletedIds)
-                    map.Remove(id);
+                return Result.Failure<IReadOnlyList<Quiz>, string>("Failed to deserialize quizzes file: result was null.");
             }
 
-            // Apply current in-memory quizzes (add or replace)
-            foreach (var kv in _quizzes)
-                map[kv.Key] = CloneQuiz(kv.Value);
-
-            var merged = map.Values.OrderBy(q => q.Id).ToList();
-            var outText = JsonSerializer.Serialize(merged, _jsonContext.ListQuiz);
-            var directory = Path.GetDirectoryName(_filePath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
-
-            await File.WriteAllTextAsync(_filePath, outText);
-            _logger.LogInformation("Persisted {count} quizzes to {path}", merged.Count, _filePath);
-        }
-        finally
-        {
-            _fileLock.Release();
-        }
-    }
-
-    public void Dispose()
-    {
-        if (_disposed) return;
-        try
-        {
-            PersistAsync().GetAwaiter().GetResult();
+            return Result.Success<IReadOnlyList<Quiz>, string>(quizzes);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error while persisting quizzes during Dispose");
+            logger.LogError(ex, "An exception occurred while loading quizzes from {FilePath}", filePath);
+            return Result.Failure<IReadOnlyList<Quiz>, string>($"An exception occurred: {ex.Message}");
         }
-        _fileLock.Dispose();
-        _disposed = true;
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_disposed) return;
-        try
-        {
-            await PersistAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error while persisting quizzes during DisposeAsync");
-        }
-        _fileLock.Dispose();
-        _disposed = true;
     }
 }

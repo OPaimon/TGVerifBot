@@ -43,7 +43,7 @@ public class ExpiredStateService
             // The user's verification time is up. We deny the join request.
             // We construct a temporary User object as we only need the ID for the job.
             var user = new User { Id = userId, FirstName = "N/A" }; 
-            await _dispatcher.DispatchAsync(new ChatJoinRequestJob(user, chatId, false));
+            await _dispatcher.DispatchAsync(new ChatJoinRequestJob(userId, chatId, false));
             
             // Note: We don't need to clean up the corresponding "verification_token" because
             // it has its own slightly longer TTL and will be removed by Redis automatically.

@@ -153,7 +153,7 @@ public class TelegramService(
         logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
 
         var buttons = optionsWithTokens
-            .Select(item => CreateQuizButton(item.Option, chat.Id, item.Token)) // REFACTOR 2: Use helper
+            .Select(item => new[] { CreateQuizButton(item.Option, chat.Id, item.Token) }) // REFACTOR 2: Use helper
             .ToArray();
 
         var inlineKeyboard = new InlineKeyboardMarkup(buttons);
@@ -169,10 +169,10 @@ public class TelegramService(
     {
         var chat = await _bot!.GetChat(job.Chat);
         // var user = job.User;
-        var user = _bot.User(job.User.Id);
+        var user = _bot.User(job.User);
         if (user == null)
         {
-            logger.LogError("Failed to retrieve user {UserId} for chat join request in chat {ChatId}", job.User.Id, job.Chat);
+            logger.LogError("Failed to retrieve user {UserId} for chat join request in chat {ChatId}", job.User, job.Chat);
             return;
         }
         var result = await _bot.Client.Messages_HideChatJoinRequest(chat, user.TLUser(), job.Approve);
