@@ -1,9 +1,13 @@
+
 using StackExchange.Redis;
 using TelegramVerificationBot;
 using TelegramVerificationBot.Configuration;
 using TelegramVerificationBot.Dispatcher;
 using TelegramVerificationBot.Models;
+using TelegramVerificationBot.Services;
 using TelegramVerificationBot.Tasks;
+
+
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddOptions<TelegramSettings>()
@@ -15,6 +19,7 @@ builder.Services.AddOptions<RateLimitingSettings>()
 builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddSingleton<VerificationService>();
 builder.Services.AddSingleton<QuizService>();
+builder.Services.AddSingleton<ExpiredStateService>();
 
 var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
 {
@@ -35,6 +40,9 @@ var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
     ,
     [typeof(EditMessageJob)] = (sp, job) =>
         sp.GetRequiredService<TelegramService>().HandleEditMessageAsync((EditMessageJob)job)
+    ,
+    [typeof(RedisKeyEventJob)] = (sp, job) =>
+        sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync((RedisKeyEventJob)job)
 };
 
 builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
@@ -61,6 +69,7 @@ builder.Services.AddSingleton<IRateLimiter, RedisTokenBucketRateLimiter>();
 
 builder.Services.AddSingleton<AppJsonSerializerContext>();
 
+builder.Services.AddHostedService<RedisKeyeventListener>();
 builder.Services.AddHostedService<Worker>();
 
 

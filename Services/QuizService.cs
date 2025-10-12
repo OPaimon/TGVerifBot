@@ -30,7 +30,7 @@ public class QuizService : IAsyncDisposable, IDisposable
         _jsonContext = jsonContext;
         _logger = logger;
         // allow file path from configuration, else default to "quizzes.json" in app base
-        _filePath = configuration?["QuizFilePath"] ?? Path.Combine(AppContext.BaseDirectory, "quizzes.json");
+        _filePath = configuration?["QuizFilePath"] ?? Path.Combine(AppContext.BaseDirectory, "data/quizzes.json");
         // If file missing, create a default file with a sample quiz so startup has at least one question.
         try
         {
