@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using System.Text.RegularExpressions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
@@ -152,7 +153,7 @@ public class TelegramService(
         logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
 
         var buttons = optionsWithTokens
-            .Select(item => CreateQuizButton(item.Option, chat.Id, item.Token)) // REFACTOR 2: Use helper
+            .Select(item => new[] { CreateQuizButton(item.Option, chat.Id, item.Token) }) // REFACTOR 2: Use helper
             .ToArray();
 
         var inlineKeyboard = new InlineKeyboardMarkup(buttons);
@@ -167,7 +168,13 @@ public class TelegramService(
     public async Task HandleChatJoinRequestAsync(ChatJoinRequestJob job)
     {
         var chat = await _bot!.GetChat(job.Chat);
-        var user = job.User;
+        // var user = job.User;
+        var user = _bot.User(job.User);
+        if (user == null)
+        {
+            logger.LogError("Failed to retrieve user {UserId} for chat join request in chat {ChatId}", job.User, job.Chat);
+            return;
+        }
         var result = await _bot.Client.Messages_HideChatJoinRequest(chat, user.TLUser(), job.Approve);
         logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chat.Id, job.Approve);
     }
@@ -191,7 +198,7 @@ public class TelegramService(
     /// Formats a user mention using MarkdownV2 style for Telegram.
     /// </summary>
     public static string MentionMarkdownV2(string username, long userid) =>
-        $"[{username}](tg://user?id={userid})";
+        $"[{EscapeMarkdownV2(username)}](tg://user?id={userid})";
 
     /// <summary>
     /// Creates an inline keyboard button for a quiz option.
@@ -211,7 +218,23 @@ public class TelegramService(
     private static string FormatWelcomeMessage(Telegram.Bot.Types.User user, Telegram.Bot.Types.Chat chat, string question)
     {
         var chatTitle = string.IsNullOrEmpty(chat.Title) ? chat.Id.ToString() : chat.Title;
-        var mention = MentionMarkdownV2(user.FirstName, user.Id);
-        return $"*欢迎 {mention} 来到 {chatTitle} ！* \n问题: {question}";
+        var mention = MentionMarkdownV2(EscapeMarkdownV2(user.FirstName), user.Id);
+        return $"*欢迎 {mention} 来到 {chatTitle} ！* \n问题: {EscapeMarkdownV2(question)}";
+    }
+
+    private static readonly Regex MarkdownV2EscapeRegex =
+        new Regex(@"([_*\[\]()~`>#+\-=|{}.!])", RegexOptions.Compiled);
+        
+    private static string EscapeMarkdownV2(string text)
+    {
+        // 健壮性检查：处理 null 或空字符串的输入，避免异常。
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+        
+        // 使用预编译的静态 Regex 实例执行替换。
+        // 替换模式 @"\$1" 会在每个匹配到的特殊字符（捕获组 1）前加上一个反斜杠 `\`。
+        return MarkdownV2EscapeRegex.Replace(text, @"\$1");
     }
 }

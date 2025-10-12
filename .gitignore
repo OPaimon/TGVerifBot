@@ -60,5 +60,4 @@ bot_session.dat
 
 .env
 
-data/
 redis-data/
