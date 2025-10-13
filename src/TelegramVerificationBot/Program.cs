@@ -18,31 +18,7 @@ builder.Services.AddOptions<RateLimitingSettings>()
 
 builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddSingleton<VerificationServiceROP>();
-builder.Services.AddSingleton(sp =>
-{
-    var logger = sp.GetRequiredService<ILogger<QuizService>>();
-    var config = sp.GetRequiredService<IConfiguration>();
-    var jsonContext = sp.GetRequiredService<AppJsonSerializerContext>();
-    return QuizService.CreateAsync(logger, config, jsonContext);
-});
-
-
-builder.Services.AddSingleton(sp =>
-{
-    var creationTask = sp.GetRequiredService<Task<CSharpFunctionalExtensions.Result<QuizService, string>>>();
-    var result = creationTask.GetAwaiter().GetResult(); // Safely block for the async result
-
-    if (result.IsFailure)
-    {
-        // Log and terminate if the essential service failed to initialize.
-        var logger = sp.GetRequiredService<ILogger<Program>>();
-        var error = $"FATAL: QuizService initialization failed: {result.Error}";
-        logger.LogCritical(error);
-        throw new InvalidOperationException(error);
-    }
-
-    return result.Value;
-});
+builder.Services.AddQuizService();
 builder.Services.AddSingleton<ExpiredStateService>();
 
 
@@ -76,7 +52,7 @@ var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
 
 builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
 
-builder.Services.AddSingleton<FunctionalTaskDispatcher>();
+builder.Services.AddSingleton<ITaskDispatcher, FunctionalTaskDispatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FunctionalTaskDispatcher>());
 
 

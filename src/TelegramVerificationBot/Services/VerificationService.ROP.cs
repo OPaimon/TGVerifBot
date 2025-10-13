@@ -41,9 +41,9 @@ public readonly struct VerificationError
 
 public class VerificationServiceROP(
     ILogger<VerificationServiceROP> logger,
-    FunctionalTaskDispatcher dispatcher,
+    ITaskDispatcher dispatcher,
     IDatabase redisDb,
-    QuizService quizService,
+    IQuizService quizService,
     AppJsonSerializerContext jsonContext)
 {
     // --- Internal records for data transfer ---

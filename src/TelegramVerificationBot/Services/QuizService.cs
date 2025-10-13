@@ -11,11 +11,32 @@ using TelegramVerificationBot.Models;
 
 namespace TelegramVerificationBot;
 
+
+public interface IQuizService
+{
+    /// <summary>
+    /// Gets a random quiz from the available set.
+    /// </summary>
+    /// <returns>A Maybe containing a Quiz, or None if no quizzes are available.</returns>
+    Maybe<Quiz> GetRandomQuiz();
+
+    /// <summary>
+    /// Backwards-compatibility shim for existing code that expects a Task that throws on failure.
+    /// </summary>
+    Task<Quiz> GetQuizRandomAsync();
+
+    /// <summary>
+    /// Hot-reloads the quiz data from the underlying data source.
+    /// </summary>
+    /// <returns>A Result indicating if the reload was successful.</returns>
+    Task<Result> ReloadQuizzesAsync();
+}
+
 /// <summary>
 /// A thread-safe, reloadable, in-memory provider for quizzes.
 /// It loads quizzes from a JSON file at startup and provides a method to hot-reload them.
 /// </summary>
-public class QuizService
+public class QuizService : IQuizService
 {
     private readonly ILogger<QuizService> _logger;
     private readonly string _filePath;
@@ -147,5 +168,35 @@ public class QuizService
             logger.LogError(ex, "An exception occurred while loading quizzes from {FilePath}", filePath);
             return Result.Failure<IReadOnlyList<Quiz>, string>($"An exception occurred: {ex.Message}");
         }
+    }
+}
+
+
+public static class QuizServiceCollectionExtensions // 通常会改名为包含服务名的扩展类
+{
+    public static IServiceCollection AddQuizService(this IServiceCollection services)
+    {
+        services.AddSingleton<IQuizService>(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<QuizService>>();
+            var config = sp.GetRequiredService<IConfiguration>();
+            var jsonContext = sp.GetRequiredService<AppJsonSerializerContext>();
+
+            var createResult = QuizService.CreateAsync(logger, config, jsonContext)
+                                          .GetAwaiter()
+                                          .GetResult();
+            
+            if (createResult.IsFailure)
+            {
+                var startupLogger = sp.GetRequiredService<ILogger<Program>>();
+                string error = $"FATAL: QuizService initialization failed: {createResult.Error}";
+                startupLogger.LogCritical(error);
+                throw new InvalidOperationException(error);
+            }
+
+            return createResult.Value;
+        });
+
+        return services;
     }
 }

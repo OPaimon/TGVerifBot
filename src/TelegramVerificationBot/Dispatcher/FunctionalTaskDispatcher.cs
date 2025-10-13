@@ -3,22 +3,23 @@ using TelegramVerificationBot.Tasks;
 
 namespace TelegramVerificationBot.Dispatcher;
 
+// highlight-next-line
 public class FunctionalTaskDispatcher(
         ILogger<FunctionalTaskDispatcher> logger,
         IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>> handlers,
         IServiceProvider serviceProvider,
-        IRateLimiter rateLimiter) : BackgroundService
+// highlight-next-line
+        IRateLimiter rateLimiter) : BackgroundService, ITaskDispatcher
 {
     private readonly Channel<object> _queue = Channel.CreateUnbounded<object>();
 
-    // This is the public API for other services to dispatch jobs.
-    // It quickly adds the job to the in-memory queue and returns.
+    // This method now fulfills the ITaskDispatcher interface contract.
     public async Task DispatchAsync(object job)
     {
         await _queue.Writer.WriteAsync(job);
     }
 
-    // This is the long-running background task that processes the queue.
+    // The rest of the class remains the same...
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("Queued task dispatcher is starting.");
@@ -27,7 +28,7 @@ public class FunctionalTaskDispatcher(
         {
             try
             {
-                // Rate limiting logic (the "valve")
+                // Rate limiting logic
                 if (job is StartVerificationJob svj)
                 {
                     while (!await rateLimiter.AllowStartVerificationAsync(svj.Requester.From.Id, svj.Requester.Chat.Id) && !stoppingToken.IsCancellationRequested)
@@ -40,7 +41,8 @@ public class FunctionalTaskDispatcher(
                 {
                     while (!await rateLimiter.AllowCallbackAsync(pcj.User.Id, pcj.Message.Chat.Id) && !stoppingToken.IsCancellationRequested)
                     {
-                        logger.LogInformation("Rate limit hit for user {UserId} on QuizCallback. Waiting...", pcj.User.Id); await Task.Delay(500, stoppingToken);
+                        logger.LogInformation("Rate limit hit for user {UserId} on QuizCallback. Waiting...", pcj.User.Id);
+                        await Task.Delay(500, stoppingToken);
                     }
                 }
 
@@ -67,4 +69,3 @@ public class FunctionalTaskDispatcher(
         logger.LogInformation("Queued task dispatcher is stopping.");
     }
 }
-
