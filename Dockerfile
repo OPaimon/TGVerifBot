@@ -3,13 +3,15 @@ ARG DOTNET_VERSION=9.0
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
 WORKDIR /source
 
-COPY --link *.csproj .
-RUN dotnet restore TelegramVerificationBot.csproj -r linux-x64 /p:PublishReadyToRun=true
+COPY --link ["TelegramVerificationBot.sln", "./"]
+COPY --link ["src/TelegramVerificationBot/TelegramVerificationBot.csproj", "./src/TelegramVerificationBot/"]
 
-COPY --link . .
+RUN dotnet restore "TelegramVerificationBot.sln" -r linux-x64 /p:PublishReadyToRun=true
 
-RUN dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained --no-restore /p:PublishTrimmed=true /p:PublishReadyToRun=true -o /app
+COPY --link ["src/", "./src/"]
 
+WORKDIR "/source/src/TelegramVerificationBot"
+RUN dotnet publish "TelegramVerificationBot.csproj" -r linux-x64 --self-contained --no-restore /p:PublishTrimmed=true /p:PublishReadyToRun=true -o /app
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:${DOTNET_VERSION}
 WORKDIR /app
