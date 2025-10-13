@@ -53,7 +53,7 @@ var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
 builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
 
 builder.Services.AddSingleton<ITaskDispatcher, FunctionalTaskDispatcher>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<FunctionalTaskDispatcher>());
+builder.Services.AddHostedService(sp => (FunctionalTaskDispatcher)sp.GetRequiredService<ITaskDispatcher>());
 
 
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis");

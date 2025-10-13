@@ -10,7 +10,7 @@ namespace TelegramVerificationBot;
 /// <summary>
 /// Handles the core logic of user verification, including starting the process and handling quiz callbacks.
 /// </summary>
-public class VerificationService(ILogger<VerificationService> logger, FunctionalTaskDispatcher dispatcher, IDatabase redisDb, QuizService quizService, AppJsonSerializerContext jsonContext)
+public class VerificationService(ILogger<VerificationService> logger, ITaskDispatcher dispatcher, IDatabase redisDb, IQuizService quizService, AppJsonSerializerContext jsonContext)
 {
 
     private async Task<bool> IsUserStatusPendingOrBlacklistedAsync(long userId, long chatId)

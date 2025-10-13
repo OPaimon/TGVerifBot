@@ -8,11 +8,11 @@ public class RedisKeyeventListener : BackgroundService
 {
     private readonly ILogger<RedisKeyeventListener> _logger;
     private readonly IConnectionMultiplexer _redis;
-    private readonly FunctionalTaskDispatcher _dispatcher;
+    private readonly ITaskDispatcher _dispatcher;
     public RedisKeyeventListener(
         ILogger<RedisKeyeventListener> logger,
         IConnectionMultiplexer redis,
-        FunctionalTaskDispatcher dispatcher)
+        ITaskDispatcher dispatcher)
     {
         _logger = logger;
         _redis = redis;

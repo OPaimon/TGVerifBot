@@ -13,10 +13,10 @@ namespace TelegramVerificationBot.Services;
 public class ExpiredStateService
 {
     private readonly ILogger<ExpiredStateService> _logger;
-    private readonly FunctionalTaskDispatcher _dispatcher;
+    private readonly ITaskDispatcher _dispatcher;
     private readonly IDatabase _redisDb;
 
-    public ExpiredStateService(ILogger<ExpiredStateService> logger, FunctionalTaskDispatcher dispatcher, IDatabase redisDb)
+    public ExpiredStateService(ILogger<ExpiredStateService> logger, ITaskDispatcher dispatcher, IDatabase redisDb)
     {
         _logger = logger;
         _dispatcher = dispatcher;

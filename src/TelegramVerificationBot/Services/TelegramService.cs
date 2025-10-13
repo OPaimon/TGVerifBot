@@ -18,7 +18,7 @@ namespace TelegramVerificationBot;
 /// </summary>
 public class TelegramService(
         ILogger<TelegramService> logger,
-        FunctionalTaskDispatcher dispatcher,
+        ITaskDispatcher dispatcher,
         IOptions<TelegramSettings> settings,
         IConfiguration configuration) : IDisposable
 {
