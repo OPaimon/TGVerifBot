@@ -3,6 +3,7 @@ using Telegram.Bot.Types;
 using TelegramVerificationBot.Dispatcher;
 using TelegramVerificationBot.Tasks;
 using StackExchange.Redis;
+using System.Text.RegularExpressions;
 
 namespace TelegramVerificationBot.Services;
 
@@ -42,9 +43,29 @@ public class ExpiredStateService
 
             // The user's verification time is up. We deny the join request.
             // We construct a temporary User object as we only need the ID for the job.
-            var user = new User { Id = userId, FirstName = "N/A" }; 
+            var redisValue = await _redisDb.StringGetAsync($"b_user_status:{userId}:{chatId}");
+
             await _dispatcher.DispatchAsync(new ChatJoinRequestJob(userId, chatId, false));
-            
+
+            if (redisValue.HasValue)
+            {
+                var valueSpan = redisValue.ToString().AsSpan();
+
+                int separatorIndex = valueSpan.IndexOf('_');
+
+                if (separatorIndex > 0 && separatorIndex < valueSpan.Length - 1)
+                {
+                    var idSpan = valueSpan.Slice(0, separatorIndex);
+                    var chatIdSpan = valueSpan.Slice(separatorIndex + 1);
+
+                    if (int.TryParse(idSpan, out int messageId) &&
+                        long.TryParse(chatIdSpan, out long messageChatId))
+                    {
+                        await _dispatcher.DispatchAsync(new EditMessageJob(messageChatId, messageId, "❌ 验证已过期，入群请求已被拒绝。"));
+                    }
+                }
+            }
+
             // Note: We don't need to clean up the corresponding "verification_token" because
             // it has its own slightly longer TTL and will be removed by Redis automatically.
         }

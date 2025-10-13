@@ -8,6 +8,37 @@ using TelegramVerificationBot.Tasks;
 
 namespace TelegramVerificationBot.Services;
 
+public enum VerificationErrorKind
+{
+    // Start
+    UserPendingOrOnCooldown,
+    NoQuizzesAvailable,
+    StateStorageFailed,
+
+    // Callback
+    InvalidCallbackData,
+    UserOnCooldown,
+    VerificationExpired,
+    IncorrectOptionOrExpiredToken,
+    StateDeserializationFailed,
+    StateValidationFailed
+}
+
+public readonly struct VerificationError
+{
+    public VerificationErrorKind Kind { get; }
+    public string Message { get; }
+
+    public VerificationError(VerificationErrorKind kind, string message)
+    {
+        Kind = kind;
+        Message = message;
+    }
+
+    public override string ToString() => Message;
+}
+
+
 public class VerificationServiceROP(
     ILogger<VerificationServiceROP> logger,
     FunctionalTaskDispatcher dispatcher,
@@ -25,7 +56,7 @@ public class VerificationServiceROP(
     {
         logger.LogInformation("Starting ROP verification for user {UserId} in chat {ChatId}", job.Requester.From.Id, job.Requester.Chat.Id);
 
-        var result = await Task.FromResult(Result.Success(job))
+        var result = await Task.FromResult(Result.Success<StartVerificationJob, VerificationError>(job))
             .Bind(j => CheckIfNotPendingOrBlacklistedAsync(j))
             .Bind(j => Task.FromResult(PrepareQuizAsync().Map(quizData => (Job: j, Quiz: quizData)))) // Combine job and quiz data
             .Bind(data => StoreStateAsync(data.Job.Requester.From.Id, data.Job.Requester.Chat.Id, data.Quiz.CorrectToken, data)); // Pass data through
@@ -34,18 +65,20 @@ public class VerificationServiceROP(
               .TapError(error => logger.LogWarning("Failed to start verification for user {UserId}: {Error}", job.Requester.From.Id, error));
     }
 
-    private async Task<Result<StartVerificationJob>> CheckIfNotPendingOrBlacklistedAsync(StartVerificationJob job)
+    private async Task<Result<StartVerificationJob, VerificationError>> CheckIfNotPendingOrBlacklistedAsync(StartVerificationJob job)
     {
         var userStatusKey = $"user_status:{job.Requester.From.Id}:{job.Requester.Chat.Id}";
         if (await redisDb.KeyExistsAsync(userStatusKey))
         {
-            return Result.Failure<StartVerificationJob>($"User {job.Requester.From.Id} has an existing status (pending or cooldown) in chat {job.Requester.Chat.Id}.");
+            var errorMessage = $"User {job.Requester.From.Id} has an existing status (pending or cooldown) in chat {job.Requester.Chat.Id}.";
+            return Result.Failure<StartVerificationJob, VerificationError>(new VerificationError(VerificationErrorKind.UserPendingOrOnCooldown, errorMessage));
         }
-        return Result.Success(job);
+        return Result.Success<StartVerificationJob, VerificationError>(job);
     }
 
-    private Result<VerificationQuizData> PrepareQuizAsync() =>
-        quizService.GetRandomQuiz().ToResult("No quizzes available.")
+    private Result<VerificationQuizData, VerificationError> PrepareQuizAsync() =>
+        quizService.GetRandomQuiz()
+            .ToResult(new VerificationError(VerificationErrorKind.NoQuizzesAvailable, "No quizzes available."))
             .Map(quiz =>
             {
                 List<OptionWithToken> optionsWithTokens = [.. quiz.Options.Select(optionText => new OptionWithToken(Option: optionText, Token: Guid.NewGuid().ToString()))];
@@ -56,9 +89,9 @@ public class VerificationServiceROP(
 
                 return new VerificationQuizData(shuffledOptions, correctToken, quiz.Question);
             });
-    
 
-    private async Task<Result<T>> StoreStateAsync<T>(long userId, long chatId, string correctToken, T passThroughValue)
+
+    private async Task<Result<T, VerificationError>> StoreStateAsync<T>(long userId, long chatId, string correctToken, T passThroughValue)
     {
         try
         {
@@ -69,14 +102,15 @@ public class VerificationServiceROP(
             var stateJson = JsonSerializer.Serialize(stateObj, jsonContext.VerificationState);
 
             await Task.WhenAll(
-                redisDb.StringSetAsync(userStatusKey, correctToken, TimeSpan.FromMinutes(5)),
-                redisDb.StringSetAsync(verificationTokenKey, stateJson, TimeSpan.FromMinutes(5).Add(TimeSpan.FromSeconds(10)))
+                redisDb.StringSetAsync(userStatusKey, correctToken, TimeSpan.FromMinutes(1)),
+                redisDb.StringSetAsync(verificationTokenKey, stateJson, TimeSpan.FromMinutes(1))
             );
-            return Result.Success<T>(passThroughValue);
+            return Result.Success<T, VerificationError>(passThroughValue);
         }
         catch (Exception ex)
         {
-            return Result.Failure<T>($"Failed to store verification state in Redis: {ex.Message}");
+            var errorMessage = $"Failed to store verification state in Redis: {ex.Message}";
+            return Result.Failure<T, VerificationError>(new VerificationError(VerificationErrorKind.StateStorageFailed, errorMessage));
         }
     }
 
@@ -93,63 +127,102 @@ public class VerificationServiceROP(
         ));
     }
 
+    public async Task HandleSendQuizCallback(SendQuizCallbackJob job)
+    {
+        var userStatusKeyBackup = $"b_user_status:{job.UserId}:{job.ChatId}";
+        await redisDb.StringSetAsync(userStatusKeyBackup, $"{job.MessageId}_{job.MessageChatId}", TimeSpan.FromMinutes(1)+TimeSpan.FromSeconds(10));
+    }
+
     #endregion
 
     #region Handle Callback
 
     public async Task HandleCallbackAsync(ProcessQuizCallbackJob job)
     {
-        var finalResult = await Task.FromResult(ParseCallbackData(job.CallbackData))
-            .Bind(callbackInfo => CheckPreVerificationStatus(job.User, callbackInfo.ChatId, job.Message, callbackInfo))
+        var result = await Task.FromResult(ParseCallbackData(job.CallbackData))
+            .Bind(callbackInfo => CheckPreVerificationStatus(job.User, callbackInfo.ChatId, callbackInfo))
             .Bind(callbackInfo => VerifyAnswerAndCleanup(job.User, callbackInfo.ChatId, callbackInfo.Token));
 
-        await finalResult.Finally(result => DispatchFinalActions(result, job.User, job.Message, GetChatIdFromCallback(job.CallbackData)));
+        await result.Match(
+            onSuccess: async _ =>
+            {
+                var chatId = GetChatIdFromCallback(job.CallbackData);
+                await DispatchFinalActions(true, job.User, job.Message, chatId, "Success");
+            },
+            onFailure: async error =>
+            {
+                var chatId = GetChatIdFromCallback(job.CallbackData);
+                logger.LogWarning("Verification failed for user {UserId} in chat {ChatId}: {Error}", job.User.Id, chatId, error.Message);
+
+                if (chatId == 0 && error.Kind == VerificationErrorKind.InvalidCallbackData)
+                {
+                    logger.LogError("Could not process callback due to invalid ChatId in callback data: {CallbackData}", job.CallbackData);
+                    return;
+                }
+
+                switch (error.Kind)
+                {
+                    case VerificationErrorKind.UserOnCooldown:
+                        await dispatcher.DispatchAsync(new EditMessageJob(job.Message.Chat.Id, job.Message.Id, "❌ 你在冷却时间内，请稍后再试。"));
+                        break;
+                    case VerificationErrorKind.VerificationExpired:
+                        var outdateText = "❌ 验证已过期，入群请求已被拒绝。";
+                        await Task.WhenAll(
+                            dispatcher.DispatchAsync(new ChatJoinRequestJob(job.User.Id, chatId, false)),
+                            dispatcher.DispatchAsync(new EditMessageJob(job.Message.Chat.Id, job.Message.Id, outdateText))
+                        );
+                        break;
+                    case VerificationErrorKind.IncorrectOptionOrExpiredToken:
+                        var userStatusKey = $"user_status:{job.User.Id}:{chatId}";
+                        await redisDb.StringSetAsync(userStatusKey, "Cooldown", TimeSpan.FromMinutes(1));
+                        await DispatchFinalActions(false, job.User, job.Message, chatId, error.Message);
+                        break;
+                    default:
+                        await DispatchFinalActions(false, job.User, job.Message, chatId, error.Message);
+                        break;
+                }
+            });
     }
 
-    private Result<CallbackInfo, string> ParseCallbackData(string callbackData)
+    private Result<CallbackInfo, VerificationError> ParseCallbackData(string callbackData)
     {
         var parts = callbackData.Split('_');
         if (parts.Length != 2 || !long.TryParse(parts[0], out var chatId))
         {
-            return Result.Failure<CallbackInfo, string>($"Invalid callback data format: {callbackData}");
+            var errorMessage = $"Invalid callback data format: {callbackData}";
+            return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.InvalidCallbackData, errorMessage));
         }
-        return Result.Success<CallbackInfo, string>(new CallbackInfo(chatId, parts[1]));
+        return Result.Success<CallbackInfo, VerificationError>(new CallbackInfo(chatId, parts[1]));
     }
 
-    private async Task<Result<CallbackInfo, string>> CheckPreVerificationStatus(User user, long chatId, Message message, CallbackInfo passThroughInfo)
+    private async Task<Result<CallbackInfo, VerificationError>> CheckPreVerificationStatus(User user, long chatId, CallbackInfo passThroughInfo)
     {
         var userStatusKey = $"user_status:{user.Id}:{chatId}";
         var status = await redisDb.StringGetAsync(userStatusKey);
 
         if (status.HasValue && status.ToString().Equals("Cooldown", StringComparison.OrdinalIgnoreCase))
         {
-            await dispatcher.DispatchAsync(new EditMessageJob(message, "❌ 你在冷却时间内，请稍后再试。"));
-            return Result.Failure<CallbackInfo, string>($"User {user.Id} is in cooldown.");
+            var errorMessage = $"User {user.Id} is in cooldown.";
+            return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.UserOnCooldown, errorMessage));
         }
 
         if (!status.HasValue)
         {
-            var outdateText = "❌ 验证已过期，入群请求已被拒绝。";
-            await Task.WhenAll(
-                dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, false)),
-                dispatcher.DispatchAsync(new EditMessageJob(message, outdateText))
-            );
-            return Result.Failure<CallbackInfo, string>($"No active verification for user {user.Id}.");
+            var errorMessage = $"No active verification for user {user.Id}.";
+            return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.VerificationExpired, errorMessage));
         }
 
-        return Result.Success<CallbackInfo, string>(passThroughInfo);
+        return Result.Success<CallbackInfo, VerificationError>(passThroughInfo);
     }
 
-    private async Task<Result<bool, string>> VerifyAnswerAndCleanup(User user, long chatId, string clickedToken)
+    private async Task<Result<bool, VerificationError>> VerifyAnswerAndCleanup(User user, long chatId, string clickedToken)
     {
         var verificationTokenKey = $"verification_token:{clickedToken}";
         var stateJson = await redisDb.StringGetDeleteAsync(verificationTokenKey);
 
         if (stateJson.IsNullOrEmpty)
         {
-            var userStatusKey = $"user_status:{user.Id}:{chatId}";
-            await redisDb.StringSetAsync(userStatusKey, "Cooldown", TimeSpan.FromMinutes(1));
-            return Result.Failure<bool, string>("Incorrect option or expired token.");
+            return Result.Failure<bool, VerificationError>(new VerificationError(VerificationErrorKind.IncorrectOptionOrExpiredToken, "Incorrect option or expired token."));
         }
 
         var validationResult = DeserializeState(stateJson.ToString())
@@ -160,48 +233,52 @@ public class VerificationServiceROP(
         return tappedResult.Map(_ => true);
     }
 
-    private Result<VerificationState, string> DeserializeState(string stateJson)
+    private Result<VerificationState, VerificationError> DeserializeState(string stateJson)
     {
         try
         {
             var state = JsonSerializer.Deserialize(stateJson, jsonContext.VerificationState);
-            return state != null
-                ? Result.Success<VerificationState, string>(state)
-                : Result.Failure<VerificationState, string>("Deserialized state is null.");
+            if (state != null)
+                return Result.Success<VerificationState, VerificationError>(state);
+
+            var errorMessage = "Deserialized state is null.";
+            return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateDeserializationFailed, errorMessage));
         }
         catch (JsonException ex)
         {
-            return Result.Failure<VerificationState, string>($"Failed to deserialize state: {ex.Message}");
+            var errorMessage = $"Failed to deserialize state: {ex.Message}";
+            return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateDeserializationFailed, errorMessage));
         }
     }
 
-    private Result<VerificationState, string> ValidateState(VerificationState state, User user, long chatId)
+    private Result<VerificationState, VerificationError> ValidateState(VerificationState state, User user, long chatId)
     {
-        return (state.UserId == user.Id && state.ChatId == chatId)
-            ? Result.Success<VerificationState, string>(state)
-            : Result.Failure<VerificationState, string>($"State mismatch. Expected User/Chat: {user.Id}/{chatId}, but got {state.UserId}/{state.ChatId}");
+        if (state.UserId == user.Id && state.ChatId == chatId)
+            return Result.Success<VerificationState, VerificationError>(state);
+
+        var errorMessage = $"State mismatch. Expected User/Chat: {user.Id}/{chatId}, but got {state.UserId}/{state.ChatId}";
+        return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateValidationFailed, errorMessage));
     }
-    
+
     private Task ClearUserStatusLockAsync(User user, long chatId)
     {
         var userStatusKey = $"user_status:{user.Id}:{chatId}";
         return redisDb.KeyDeleteAsync(userStatusKey);
     }
 
-    private Task DispatchFinalActions(Result<bool, string> result, User user, Message message, long chatId)
+    private Task DispatchFinalActions(bool isApproved, User user, Message message, long chatId, string reason)
     {
-        bool isApproved = result.IsSuccess;
         var resultText = isApproved ? "✅ 验证通过！欢迎加入！" : "❌ 验证失败，入群请求已被拒绝。";
-        
-        logger.LogInformation("Verification result for user {UserId} in chat {ChatId}. Approved: {IsApproved}. Reason: {Reason}", 
-            user.Id, chatId, isApproved, result.IsFailure ? result.Error : "Success");
+
+        logger.LogInformation("Verification result for user {UserId} in chat {ChatId}. Approved: {IsApproved}. Reason: {Reason}",
+            user.Id, chatId, isApproved, reason);
 
         return Task.WhenAll(
             dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, isApproved)),
-            dispatcher.DispatchAsync(new EditMessageJob(message, resultText))
+            dispatcher.DispatchAsync(new EditMessageJob(message.Chat.Id, message.Id, resultText))
         );
     }
-    
+
     private long GetChatIdFromCallback(string callbackData)
     {
         // Helper to extract ChatId for logging even on failure

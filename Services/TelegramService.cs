@@ -85,7 +85,7 @@ public class TelegramService(
             case WTelegram.Types.Message { Text: "/ping" } when msg.Type == MessageType.Text:
                 logger.LogInformation("Received 'Ping' from chat {ChatId}", msg.Chat.Id);
                 // This can be used for a simple health check.
-                var pingJob = new RespondToPingJob(msg.Chat);
+                var pingJob = new RespondToPingJob(msg.Chat.Id);
                 await dispatcher.DispatchAsync(pingJob);
                 break;
             default:
@@ -137,9 +137,8 @@ public class TelegramService(
     /// </summary>
     public async Task RespondToPingAsync(RespondToPingJob job)
     {
-        var chat = job.Chat;
-        logger.LogInformation("Responding to Ping from chat {ChatId}", chat.Id);
-        await _bot!.SendMessage(chat, "Pong");
+        logger.LogInformation("Responding to Ping from chat {ChatId}", job.ChatId);
+        await _bot!.SendMessage(job.ChatId, "Pong");
     }
 
     /// <summary>
@@ -159,7 +158,8 @@ public class TelegramService(
         var inlineKeyboard = new InlineKeyboardMarkup(buttons);
         var replyMessage = FormatWelcomeMessage(user, chat, question); // REFACTOR 3: Use helper
 
-        await _bot!.SendMessage(userChatId, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
+        var result = await _bot!.SendMessage(userChatId, replyMessage, parseMode: ParseMode.MarkdownV2, replyMarkup: inlineKeyboard);
+        await dispatcher.DispatchAsync(new SendQuizCallbackJob(user.Id, chat.Id, result!.Id, userChatId));
     }
 
     /// <summary>
@@ -184,12 +184,8 @@ public class TelegramService(
     /// </summary>
     public async Task HandleEditMessageAsync(EditMessageJob job)
     {
-        var message = job.Message;
-        var chat = message.Chat;
-        var messageId = message.MessageId;
-        var newText = job.NewText;
-        var result = await _bot!.EditMessageText(chat, messageId, newText);
-        logger.LogInformation("Edited message {MessageId} in chat {ChatId}", messageId, chat.Id);
+        var result = await _bot!.EditMessageText(job.ChatId, job.MessageId, job.NewText);
+        logger.LogInformation("Edited message {MessageId} in chat {ChatId}", job.MessageId, job.ChatId);
     }
     
     // --- Helper Functions ---
