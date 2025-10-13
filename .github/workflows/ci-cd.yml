@@ -34,12 +34,11 @@ jobs:
         # 定义矩阵，这将启动两个并行的构建
         config:
           - name: linux-x64-sc
-            self_contained: true
-            runtime: linux-x64
+            # 修正 #2: 将 runtime flag 作为一个整体
+            runtime_flag: "-r linux-x64" 
             flags: "/p:PublishReadyToRun=true /p:PublishTrimmed=true"
           - name: framework-dependent
-            self_contained: false
-            runtime: ""
+            runtime_flag: "" # 依赖框架构建不需要 runtime flag
             flags: ""
 
     steps:
@@ -51,11 +50,13 @@ jobs:
           dotnet-version: '9.0.x'
       
       - name: Publish Artifact (${{ matrix.config.name }})
+        # 修正 #1: 增加超时时间
+        timeout-minutes: 15 
         run: >
           dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj
           -c Release
-          --self-contained ${{ matrix.config.self_contained }}
-          -r ${{ matrix.config.runtime }}
+          --self-contained
+          ${{ matrix.config.runtime_flag }}
           ${{ matrix.config.flags }}
           -o ./release-artifacts/${{ matrix.config.name }}
 
@@ -93,13 +94,16 @@ jobs:
             latest
             type=sha,prefix=
       - name: Build and push Docker image
+        id: push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      # 修正 #3: 此步骤的 if 条件确保它只在 push 步骤成功后运行
       - name: Generate artifact attestation
+        if: steps.push.outputs.digest != ''
         uses: actions/attest-build-provenance@v3
         with:
           subject-name: ghcr.io/${{ github.repository}}
