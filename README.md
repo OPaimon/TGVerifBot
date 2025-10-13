@@ -31,15 +31,15 @@ This is the easiest way to deploy the bot, as it does not require cloning the so
     services:
       tgverifbot:
         image: ghcr.io/opaimon/tgverifbot:main
-        pull_policy: always # Ensures you get the latest image every time you start
         restart: unless-stopped
+        user: "${UID}:${GID}"
         environment:
           - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
           - TelegramSettings__ApiId=${TELEGRAM_API_ID}
           - TelegramSettings__ApiHash=${TELEGRAM_API_HASH}
           - ConnectionStrings__Redis=redis:6379
         volumes:
-          - ./data:/app/data
+          - ./data:/app/data:z
         depends_on:
           - redis
 
@@ -47,7 +47,7 @@ This is the easiest way to deploy the bot, as it does not require cloning the so
         image: "docker.io/library/redis:alpine"
         restart: unless-stopped
         volumes:
-          - ./redis-data:/data
+          - ./redis-data:/data:z
     ```
 
 3.  **Create a `.env` Configuration File**
@@ -79,46 +79,59 @@ This is the easiest way to deploy the bot, as it does not require cloning the so
 
 ---
 
-### Option 2: Deploying Pre-built Artifacts (without Docker)
+### Option 2: Building and Deploying from Source (without Docker)
 
-This method is for deploying on a Linux server without Docker, using pre-compiled executables from our CI workflow.
+This method is for deploying on a Linux server without Docker.
 
-#### 1. Download an Artifact
+#### 1. Clone Repository and Install .NET SDK
 
-1.  Navigate to the **Actions** tab of this GitHub repository.
-2.  Select the latest successful workflow run from the `main` branch.
-3.  Download an artifact from the "Artifacts" section.
+First, clone this repository to your server and ensure you have the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) installed.
 
-    **Choosing an Artifact:**
+```bash
+git clone https://github.com/opaimon/tgverifbot.git
+cd tgverifbot
+```
 
-    -   **`linux-x64-trimmed-artifact.zip` (Optimized for Size):**
-        This is the version we use to build the official Docker image. It is optimized for a small footprint using .NET's trimming and ReadyToRun features. While trimming is generally reliable, it can theoretically remove necessary code in edge cases, especially with third-party dependencies. This version is ideal for most containerized or serverless deployments.
+#### 2. Build from Source
 
-    -   **`linux-x64-full-artifact.zip` (Maximum Compatibility):**
-        This is a larger, non-trimmed version. It provides a baseline for debugging and should be used if you encounter any unexpected issues with the trimmed version, or if your operational policy prioritizes guaranteed compatibility over deployment size.
+You can choose different build methods based on your needs. The build artifacts will be located in the `publish` directory.
 
-    -   **`framework-dependent-artifact.zip`:**
-        Requires the .NET 9.0 runtime to be installed on the server.
+-   **Optimized for Size (Recommended):**
+    This creates a trimmed and ReadyToRun self-contained executable for the smallest size.
+    ```bash
+    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
+    ```
 
-#### 2. Deploy Files
+-   **Maximum Compatibility:**
+    This creates a non-trimmed self-contained executable, which is larger but offers maximum compatibility.
+    ```bash
+    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
+    ```
 
-1.  Unzip the downloaded artifact.
-2.  Copy the contents of the unzipped directory to a location on your server, for example, `/opt/tgverifbot`.
+-   **Framework-Dependent:**
+    This creates a build that requires the .NET 9.0 runtime to be installed on the server.
+    ```bash
+    dotnet publish -o ./publish
+    ```
+
+#### 3. Deploy Files
+
+1.  Copy the built files to a location on your server, for example, `/opt/tgverifbot`.
 
     ```bash
     # Make sure the destination directory exists
     sudo mkdir -p /opt/tgverifbot
     
-    # Unzip directly to the target location
-    unzip linux-x64-*.zip -d /opt/tgverifbot
+    # Copy the build artifacts
+    sudo cp -r ./publish/* /opt/tgverifbot/
     ```
-3.  You also need to copy over your data files, for example `data/quizzes.json`.
+2.  You also need to copy over your data files.
     ```bash
     sudo mkdir -p /opt/tgverifbot/data
     sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
     ```
 
-#### 3. Create Environment Configuration
+#### 4. Create Environment Configuration
 
 The systemd service will load configuration from an environment file. Create a directory and a file for it:
 
@@ -136,11 +149,10 @@ TelegramSettings__ApiHash=YOUR_API_HASH_HERE
 ConnectionStrings__Redis=localhost:6379
 
 # Important: Update these paths to match your deployment location
-ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationBot.sqlite
 QuizFilePath=/opt/tgverifbot/data/quizzes.json
 ```
 
-#### 4. Setup Systemd Service
+#### 5. Setup Systemd Service
 
 1.  Copy the example `tgverifbot.service` file (included in this repository) to the systemd directory:
 
@@ -160,7 +172,7 @@ QuizFilePath=/opt/tgverifbot/data/quizzes.json
     sudo systemctl enable --now tgverifbot.service
     ```
 
-#### 5. Manage the Service
+#### 6. Manage the Service
 
 -   **Check the status:** `sudo systemctl status tgverifbot.service`
 -   **View logs in real-time:** `sudo journalctl -u tgverifbot.service -f`

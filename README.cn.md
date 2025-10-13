@@ -31,15 +31,15 @@
     services:
       tgverifbot:
         image: ghcr.io/opaimon/tgverifbot:main
-        pull_policy: always # 确保每次启动时都拉取最新的镜像
         restart: unless-stopped
+        user: "${UID}:${GID}"
         environment:
           - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
           - TelegramSettings__ApiId=${TELEGRAM_API_ID}
           - TelegramSettings__ApiHash=${TELEGRAM_API_HASH}
           - ConnectionStrings__Redis=redis:6379
         volumes:
-          - ./data:/app/data
+          - ./data:/app/data:z
         depends_on:
           - redis
 
@@ -47,7 +47,7 @@
         image: "docker.io/library/redis:alpine"
         restart: unless-stopped
         volumes:
-          - ./redis-data:/data
+          - ./redis-data:/data:z
     ```
 
 3.  **创建 `.env` 配置文件**
@@ -79,46 +79,59 @@
 
 ---
 
-### 方案二：部署预构建产物 (不使用 Docker)
+### 方案二：从源码构建和部署 (不使用 Docker)
 
-此方法适用于在不使用 Docker 的 Linux 服务器上进行部署，我们将直接使用 CI 工作流生成的预编译可执行文件。
+此方法适用于在不使用 Docker 的 Linux 服务器上进行部署。
 
-#### 1. 下载构建产物
+#### 1. 克隆仓库并安装 .NET SDK
 
-1.  导航到本 GitHub 仓库的 **Actions** 标签页。
-2.  从 `main` 分支中选择最新一次成功的工作流运行。
-3.  在“Artifacts”区域下载您需要的构建产物。
+首先，克隆本仓库到您的服务器上，并确保您已经安装了 [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)。
 
-    **如何选择构建产物:**
+```bash
+git clone https://github.com/opaimon/tgverifbot.git
+cd tgverifbot
+```
 
-    -   **`linux-x64-trimmed-artifact.zip` (为体积优化):**
-        这是我们用于构建官方 Docker 镜像的版本。它使用了 .NET 的裁剪 (Trimming) 和 ReadyToRun 技术以获得最小的体积。尽管裁剪功能通常是可靠的，但理论上存在移除边缘场景所需代码的微小风险（尤其是在第三方库中）。这个版本是大多数容器化或无服务器部署场景的理想选择。
+#### 2. 从源码构建
 
-    -   **`linux-x64-full-artifact.zip` (为最大化兼容性):**
-        这是一个体积较大、未经裁剪的版本。它可作为调试的基准；如果您在使用裁剪版本时遇到任何意外问题，或者您的运维策略要求绝对的兼容性而非更小的部署体积，应选择此版本。
+您可以根据需求选择不同的构建方式。构建产物将位于 `publish` 目录中。
 
-    -   **`framework-dependent-artifact.zip`:**
-        需要目标服务器上预先安装 .NET 9.0 运行时。
+-   **为体积优化 (推荐):**
+    这将生成一个经过裁剪和 ReadyToRun 优化的独立可执行文件，体积最小。
+    ```bash
+    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
+    ```
 
-#### 2. 部署文件
+-   **为最大化兼容性:**
+    这将生成一个未经裁剪的独立可执行文件，体积较大，但兼容性最好。
+    ```bash
+    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
+    ```
 
-1.  解压下载的 `zip` 文件。
-2.  将解压后文件夹中的**内容**复制到您服务器上的指定位置，例如 `/opt/tgverifbot`。
+-   **框架依赖型:**
+    这将生成一个依赖于服务器上已安装的 .NET 9.0 运行时的版本。
+    ```bash
+    dotnet publish -o ./publish
+    ```
+
+#### 3. 部署文件
+
+1.  将构建好的文件复制到您服务器上的指定位置，例如 `/opt/tgverifbot`。
 
     ```bash
     # 确保目标文件夹存在
     sudo mkdir -p /opt/tgverifbot
     
-    # 直接解压到目标位置
-    unzip linux-x64-*.zip -d /opt/tgverifbot
+    # 复制构建产物
+    sudo cp -r ./publish/* /opt/tgverifbot/
     ```
-3.  您还需要一同拷贝数据文件，例如 `data/quizzes.json`。
+2.  您还需要一同拷贝数据文件。
     ```bash
     sudo mkdir -p /opt/tgverifbot/data
     sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
     ```
 
-#### 3. 创建环境配置文件
+#### 4. 创建环境配置文件
 
 systemd 服务将从一个环境文件中加载配置。为其创建一个目录和文件：
 
@@ -136,11 +149,10 @@ TelegramSettings__ApiHash=YOUR_API_HASH_HERE
 ConnectionStrings__Redis=localhost:6379
 
 # 重要：请将这些路径更新为您的实际部署路径
-ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationBot.sqlite
 QuizFilePath=/opt/tgverifbot/data/quizzes.json
 ```
 
-#### 4. 设置 Systemd 服务
+#### 5. 设置 Systemd 服务
 
 1.  将项目中的 `tgverifbot.service` 示例文件复制到 systemd 目录：
 
@@ -160,7 +172,7 @@ QuizFilePath=/opt/tgverifbot/data/quizzes.json
     sudo systemctl enable --now tgverifbot.service
     ```
 
-#### 5. 管理服务
+#### 6. 管理服务
 
 -   **检查状态:** `sudo systemctl status tgverifbot.service`
 -   **实时查看日志:** `sudo journalctl -u tgverifbot.service -f`
