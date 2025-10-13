@@ -69,6 +69,9 @@ var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
     ,
     [typeof(RedisKeyEventJob)] = (sp, job) =>
         sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync((RedisKeyEventJob)job)
+    ,
+    [typeof(SendQuizCallbackJob)] = (sp, job) =>
+        sp.GetRequiredService<VerificationServiceROP>().HandleSendQuizCallback((SendQuizCallbackJob)job)
 };
 
 builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
