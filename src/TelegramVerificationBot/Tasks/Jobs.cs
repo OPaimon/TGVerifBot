@@ -1,8 +1,8 @@
 using Telegram.Bot.Types;
 using TelegramVerificationBot.Models;
+using Chat = Telegram.Bot.Types.Chat;
 using Message = Telegram.Bot.Types.Message;
 using User = Telegram.Bot.Types.User;
-using Chat = Telegram.Bot.Types.Chat;
 
 namespace TelegramVerificationBot.Tasks;
 

@@ -4,62 +4,51 @@ using TelegramVerificationBot.Configuration;
 
 namespace TelegramVerificationBot;
 
-public interface IRateLimiter
-{
-    Task<bool> AllowStartVerificationAsync(long userId, long chatId);
-    Task<bool> AllowCallbackAsync(long userId, long chatId);
+public interface IRateLimiter {
+  Task<bool> AllowStartVerificationAsync(long userId, long chatId);
+  Task<bool> AllowCallbackAsync(long userId, long chatId);
 }
 
-public class RedisRateLimiter : IRateLimiter
-{
-    private readonly IDatabase _redis;
-    private readonly ILogger<RedisRateLimiter> _logger;
-    private readonly FixedWindowSettings _settings;
+public class RedisRateLimiter : IRateLimiter {
+  private readonly IDatabase _redis;
+  private readonly ILogger<RedisRateLimiter> _logger;
+  private readonly FixedWindowSettings _settings;
 
-    public RedisRateLimiter(IDatabase redis, ILogger<RedisRateLimiter> logger, IOptions<RateLimitingSettings> options)
-    {
-        _redis = redis;
-        _logger = logger;
-        _settings = options.Value.FixedWindow;
-    }
+  public RedisRateLimiter(IDatabase redis, ILogger<RedisRateLimiter> logger, IOptions<RateLimitingSettings> options) {
+    _redis = redis;
+    _logger = logger;
+    _settings = options.Value.FixedWindow;
+  }
 
-    private async Task<bool> AllowAsync(string action, long userId, long chatId, int limit, TimeSpan window)
-    {
-        try
-        {
-            var key = $"rl:{action}:{userId}:{chatId}";
-            var value = await _redis.StringIncrementAsync(key).ConfigureAwait(false);
-            if (value == 1)
-            {
-                await _redis.KeyExpireAsync(key, window).ConfigureAwait(false);
-            }
-            return value <= limit;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "RateLimiter: Redis unavailable, defaulting to allow");
-            return true;
-        }
+  private async Task<bool> AllowAsync(string action, long userId, long chatId, int limit, TimeSpan window) {
+    try {
+      var key = $"rl:{action}:{userId}:{chatId}";
+      var value = await _redis.StringIncrementAsync(key).ConfigureAwait(false);
+      if (value == 1) {
+        await _redis.KeyExpireAsync(key, window).ConfigureAwait(false);
+      }
+      return value <= limit;
+    } catch (Exception ex) {
+      _logger.LogWarning(ex, "RateLimiter: Redis unavailable, defaulting to allow");
+      return true;
     }
+  }
 
-    public Task<bool> AllowStartVerificationAsync(long userId, long chatId)
-    {
-        return AllowAsync("start", userId, chatId, _settings.StartVerificationLimit, TimeSpan.FromSeconds(_settings.StartVerificationWindowSeconds));
-    }
+  public Task<bool> AllowStartVerificationAsync(long userId, long chatId) {
+    return AllowAsync("start", userId, chatId, _settings.StartVerificationLimit, TimeSpan.FromSeconds(_settings.StartVerificationWindowSeconds));
+  }
 
-    public Task<bool> AllowCallbackAsync(long userId, long chatId)
-    {
-        return AllowAsync("callback", userId, chatId, _settings.CallbackLimit, TimeSpan.FromSeconds(_settings.CallbackWindowSeconds));
-    }
+  public Task<bool> AllowCallbackAsync(long userId, long chatId) {
+    return AllowAsync("callback", userId, chatId, _settings.CallbackLimit, TimeSpan.FromSeconds(_settings.CallbackWindowSeconds));
+  }
 }
 
-public class RedisTokenBucketRateLimiter : IRateLimiter
-{
-    private readonly IDatabase _redis;
-    private readonly ILogger<RedisTokenBucketRateLimiter> _logger;
-    private readonly TokenBucketSettings _settings;
+public class RedisTokenBucketRateLimiter : IRateLimiter {
+  private readonly IDatabase _redis;
+  private readonly ILogger<RedisTokenBucketRateLimiter> _logger;
+  private readonly TokenBucketSettings _settings;
 
-    private const string TokenBucketLuaScript = @"
+  private const string _tokenBucketLuaScript = @"
         local key = KEYS[1]
         local capacity = tonumber(ARGV[1])
         local refill_rate = tonumber(ARGV[2])
@@ -82,14 +71,14 @@ public class RedisTokenBucketRateLimiter : IRateLimiter
 
         local time_elapsed = current_time - last_refill_time
         local new_tokens = time_elapsed * refill_rate
-        
+
         tokens = math.min(capacity, tokens + new_tokens)
         last_refill_time = current_time
 
         if tokens >= requested_tokens then
             tokens = tokens - requested_tokens
             redis.call('hset', key, 'tokens', tokens, 'last_refill_time', last_refill_time)
-            redis.call('expire', key, capacity / refill_rate * 2) 
+            redis.call('expire', key, capacity / refill_rate * 2)
             return 1
         else
             redis.call('hset', key, 'tokens', tokens, 'last_refill_time', last_refill_time)
@@ -98,53 +87,45 @@ public class RedisTokenBucketRateLimiter : IRateLimiter
         end
     ";
 
-    public RedisTokenBucketRateLimiter(IDatabase redis, ILogger<RedisTokenBucketRateLimiter> logger, IOptions<RateLimitingSettings> options)
-    {
-        _redis = redis;
-        _logger = logger;
-        _settings = options.Value.TokenBucket;
-    }
+  public RedisTokenBucketRateLimiter(IDatabase redis, ILogger<RedisTokenBucketRateLimiter> logger, IOptions<RateLimitingSettings> options) {
+    _redis = redis;
+    _logger = logger;
+    _settings = options.Value.TokenBucket;
+  }
 
-    private async Task<bool> AllowAsync(string action, long userId, long chatId, int capacity, double refillRatePerSecond)
-    {
-        try
-        {
-            var key = $"tb:{action}:{userId}:{chatId}";
-            var currentTime = new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds();
-            
-            var result = await _redis.ScriptEvaluateAsync(
-                TokenBucketLuaScript,
-                new RedisKey[] { key },
-                new RedisValue[] { capacity, refillRatePerSecond, currentTime, 1 }
-            );
+  private async Task<bool> AllowAsync(string action, long userId, long chatId, int capacity, double refillRatePerSecond) {
+    try {
+      var key = $"tb:{action}:{userId}:{chatId}";
+      var currentTime = new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds();
 
-            return (long)result == 1;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "TokenBucketRateLimiter: Redis unavailable, defaulting to allow");
-            return true;
-        }
-    }
+      var result = await _redis.ScriptEvaluateAsync(
+          _tokenBucketLuaScript,
+          new RedisKey[] { key },
+          new RedisValue[] { capacity, refillRatePerSecond, currentTime, 1 }
+      );
 
-    public Task<bool> AllowStartVerificationAsync(long userId, long chatId)
-    {
-        return AllowAsync("start", userId, chatId, _settings.StartVerificationCapacity, _settings.StartVerificationRefillRatePerSecond);
+      return (long)result == 1;
+    } catch (Exception ex) {
+      _logger.LogWarning(ex, "TokenBucketRateLimiter: Redis unavailable, defaulting to allow");
+      return true;
     }
+  }
 
-    public Task<bool> AllowCallbackAsync(long userId, long chatId)
-    {
-        return AllowAsync("callback", userId, chatId, _settings.CallbackCapacity, _settings.CallbackRefillRatePerSecond);
-    }
+  public Task<bool> AllowStartVerificationAsync(long userId, long chatId) {
+    return AllowAsync("start", userId, chatId, _settings.StartVerificationCapacity, _settings.StartVerificationRefillRatePerSecond);
+  }
+
+  public Task<bool> AllowCallbackAsync(long userId, long chatId) {
+    return AllowAsync("callback", userId, chatId, _settings.CallbackCapacity, _settings.CallbackRefillRatePerSecond);
+  }
 }
 
-public class RedisLeakyBucketRateLimiter : IRateLimiter
-{
-    private readonly IDatabase _redis;
-    private readonly ILogger<RedisLeakyBucketRateLimiter> _logger;
-    private readonly LeakyBucketSettings _settings;
+public class RedisLeakyBucketRateLimiter : IRateLimiter {
+  private readonly IDatabase _redis;
+  private readonly ILogger<RedisLeakyBucketRateLimiter> _logger;
+  private readonly LeakyBucketSettings _settings;
 
-    private const string LeakyBucketLuaScript = @"
+  private const string _leakyBucketLuaScript = @"
         local key = KEYS[1]
         local leak_interval_ms = tonumber(ARGV[1])
         local current_time_ms = tonumber(ARGV[2])
@@ -164,43 +145,36 @@ public class RedisLeakyBucketRateLimiter : IRateLimiter
         end
     ";
 
-    public RedisLeakyBucketRateLimiter(IDatabase redis, ILogger<RedisLeakyBucketRateLimiter> logger, IOptions<RateLimitingSettings> options)
-    {
-        _redis = redis;
-        _logger = logger;
-        _settings = options.Value.LeakyBucket;
+  public RedisLeakyBucketRateLimiter(IDatabase redis, ILogger<RedisLeakyBucketRateLimiter> logger, IOptions<RateLimitingSettings> options) {
+    _redis = redis;
+    _logger = logger;
+    _settings = options.Value.LeakyBucket;
+  }
+
+  private async Task<bool> AllowAsync(string action, long userId, long chatId, TimeSpan leakInterval) {
+    try {
+      var key = $"lb:{action}:{userId}:{chatId}";
+      var currentTimeMs = new DateTimeOffset(DateTime.UtcNow).ToUnixTimeMilliseconds();
+      var leakIntervalMs = leakInterval.TotalMilliseconds;
+
+      var result = await _redis.ScriptEvaluateAsync(
+          _leakyBucketLuaScript,
+          new RedisKey[] { key },
+          new RedisValue[] { leakIntervalMs, currentTimeMs }
+      );
+
+      return (long)result == 1;
+    } catch (Exception ex) {
+      _logger.LogWarning(ex, "LeakyBucketRateLimiter: Redis unavailable, defaulting to allow");
+      return true;
     }
+  }
 
-    private async Task<bool> AllowAsync(string action, long userId, long chatId, TimeSpan leakInterval)
-    {
-        try
-        {
-            var key = $"lb:{action}:{userId}:{chatId}";
-            var currentTimeMs = new DateTimeOffset(DateTime.UtcNow).ToUnixTimeMilliseconds();
-            var leakIntervalMs = leakInterval.TotalMilliseconds;
+  public Task<bool> AllowStartVerificationAsync(long userId, long chatId) {
+    return AllowAsync("start", userId, chatId, TimeSpan.FromSeconds(_settings.StartVerificationIntervalSeconds));
+  }
 
-            var result = await _redis.ScriptEvaluateAsync(
-                LeakyBucketLuaScript,
-                new RedisKey[] { key },
-                new RedisValue[] { leakIntervalMs, currentTimeMs }
-            );
-
-            return (long)result == 1;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "LeakyBucketRateLimiter: Redis unavailable, defaulting to allow");
-            return true;
-        }
-    }
-
-    public Task<bool> AllowStartVerificationAsync(long userId, long chatId)
-    {
-        return AllowAsync("start", userId, chatId, TimeSpan.FromSeconds(_settings.StartVerificationIntervalSeconds));
-    }
-
-    public Task<bool> AllowCallbackAsync(long userId, long chatId)
-    {
-        return AllowAsync("callback", userId, chatId, TimeSpan.FromMilliseconds(_settings.CallbackIntervalMilliseconds));
-    }
+  public Task<bool> AllowCallbackAsync(long userId, long chatId) {
+    return AllowAsync("callback", userId, chatId, TimeSpan.FromMilliseconds(_settings.CallbackIntervalMilliseconds));
+  }
 }

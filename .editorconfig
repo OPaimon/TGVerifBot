@@ -1,0 +1,143 @@
+# Google C# Style Guide .editorconfig
+#
+# This file is configured to match the Google C# Style Guide as closely as possible.
+# See: https://google.github.io/styleguide/csharp-style.html
+#
+# root = true: Specifies this is the root of the project.
+root = true
+
+# Apply to all files
+[*]
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# Apply to C# files
+[*.cs]
+
+# -----------------------------------------------------------------------------
+# Formatting Guidelines - Indentation and Whitespace
+# -----------------------------------------------------------------------------
+
+# Indentation of 2 spaces, no tabs.
+indent_style = space
+indent_size = 2
+
+# Column limit: 100
+max_line_length = 100
+
+# Space after if/for/while etc., and after commas.
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_after_comma = true
+
+# No space after an opening parenthesis or before a closing parenthesis.
+csharp_space_between_parentheses = false
+
+# One space between the operator and each operand of all other operators.
+csharp_space_around_binary_operators = before_and_after
+
+# -----------------------------------------------------------------------------
+# Formatting Guidelines - Newline and Brace Rules
+# -----------------------------------------------------------------------------
+
+# No line break before opening brace.
+csharp_new_line_before_open_brace = none
+
+# Braces used even when optional.
+csharp_prefer_braces = true:warning
+
+# No line break between closing brace and else.
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false
+
+# -----------------------------------------------------------------------------
+# Organization - `using` Directives and Modifiers
+# -----------------------------------------------------------------------------
+
+# Namespace `using` declarations go at the top.
+# `using` import order is alphabetical, apart from System imports which always go first.
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# Modifiers occur in the following order:
+csharp_preferred_modifier_order = public,protected,internal,private,new,abstract,virtual,override,sealed,static,readonly,extern,unsafe,volatile,async
+
+# -----------------------------------------------------------------------------
+# Coding Guidelines - Language Features
+# -----------------------------------------------------------------------------
+
+# Use of the `var` keyword
+# Encouraged if it aids readability by avoiding type names that are noisy, obvious, or unimportant.
+csharp_style_var_when_type_is_apparent = true:suggestion
+# Discouraged when working with basic types.
+csharp_style_var_for_built_in_types = false:suggestion
+# Discouraged when users would clearly benefit from knowing the type.
+csharp_style_var_elsewhere = false:suggestion
+
+# Expression body syntax
+# For single line read-only properties, prefer expression body properties (=>).
+csharp_style_expression_bodied_properties = when_on_single_line:suggestion
+csharp_style_expression_bodied_accessors = when_on_single_line:suggestion
+# Don’t use on method definitions.
+csharp_style_expression_bodied_methods = false:suggestion
+csharp_style_expression_bodied_constructors = false:suggestion
+csharp_style_expression_bodied_operators = false:suggestion
+
+# Object Initializer syntax is fine for ‘plain old data’ types.
+dotnet_style_object_initializer = true:suggestion
+
+# Prefer member extension methods over SQL-style LINQ keywords.
+dotnet_style_prefer_method_syntax = true:suggestion
+
+# -----------------------------------------------------------------------------
+# Naming Rules
+# -----------------------------------------------------------------------------
+
+# Names of classes, methods, enumerations, public fields, public properties, namespaces: PascalCase.
+dotnet_naming_rule.public_members_pascal_case.severity = warning
+dotnet_naming_rule.public_members_pascal_case.symbols = public_symbols
+dotnet_naming_rule.public_members_pascal_case.style = pascal_case_style
+
+dotnet_naming_symbols.public_symbols.applicable_kinds = namespace, class, struct, enum, property, method, field, event, delegate
+dotnet_naming_symbols.public_symbols.applicable_accessibilities = public
+dotnet_naming_symbols.public_symbols.required_modifiers =
+
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+
+# Names of interfaces start with I, e.g. IInterface.
+dotnet_naming_rule.interfaces_begin_with_i.severity = warning
+dotnet_naming_rule.interfaces_begin_with_i.symbols = interface_symbols
+dotnet_naming_rule.interfaces_begin_with_i.style = interface_style
+
+dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
+dotnet_naming_symbols.interface_symbols.applicable_accessibilities = public, internal, private, protected
+dotnet_naming_symbols.interface_symbols.required_modifiers =
+
+dotnet_naming_style.interface_style.capitalization = pascal_case
+dotnet_naming_style.interface_style.required_prefix = I
+
+# Names of private, protected, internal and protected internal fields and properties: _camelCase.
+dotnet_naming_rule.private_members_underscore_camel_case.severity = warning
+dotnet_naming_rule.private_members_underscore_camel_case.symbols = private_symbols
+dotnet_naming_rule.private_members_underscore_camel_case.style = underscore_camel_case_style
+
+dotnet_naming_symbols.private_symbols.applicable_kinds = field, property
+dotnet_naming_symbols.private_symbols.applicable_accessibilities = private, protected, internal, protected_internal
+dotnet_naming_symbols.private_symbols.required_modifiers =
+
+dotnet_naming_style.underscore_camel_case_style.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case_style.required_prefix = _
+dotnet_naming_style.underscore_camel_case_style.word_separator =
+
+# Names of local variables, parameters: camelCase.
+dotnet_naming_rule.locals_and_parameters_camel_case.severity = warning
+dotnet_naming_rule.locals_and_parameters_camel_case.symbols = local_and_parameter_symbols
+dotnet_naming_rule.locals_and_parameters_camel_case.style = camel_case_style
+
+dotnet_naming_symbols.local_and_parameter_symbols.applicable_kinds = parameter, local
+dotnet_naming_symbols.local_and_parameter_symbols.applicable_accessibilities =
+dotnet_naming_symbols.local_and_parameter_symbols.required_modifiers =
+
+dotnet_naming_style.camel_case_style.capitalization = camel_case

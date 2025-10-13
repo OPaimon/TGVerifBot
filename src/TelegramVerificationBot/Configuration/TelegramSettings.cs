@@ -1,9 +1,8 @@
 namespace TelegramVerificationBot.Configuration;
-public partial class TelegramSettings
-{
-    public required string BotToken { get; set; }
-    public required string ApiId { get; set; }
-    public required string ApiHash { get; set; }
+public partial class TelegramSettings {
+  public required string BotToken { get; set; }
+  public required string ApiId { get; set; }
+  public required string ApiHash { get; set; }
 
 }
 

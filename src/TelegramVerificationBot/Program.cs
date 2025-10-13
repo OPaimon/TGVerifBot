@@ -23,31 +23,30 @@ builder.Services.AddSingleton<ExpiredStateService>();
 
 
 
-var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>>
-{
-    [typeof(RespondToPingJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().RespondToPingAsync((RespondToPingJob)job)
+var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>> {
+  [typeof(RespondToPingJob)] = (sp, job) =>
+      sp.GetRequiredService<TelegramService>().RespondToPingAsync((RespondToPingJob)job)
     ,
-    [typeof(StartVerificationJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleStartVerificationAsync((StartVerificationJob)job)
+  [typeof(StartVerificationJob)] = (sp, job) =>
+      sp.GetRequiredService<VerificationServiceROP>().HandleStartVerificationAsync((StartVerificationJob)job)
     ,
-    [typeof(SendQuizJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().SendQuizAsync((SendQuizJob)job)
+  [typeof(SendQuizJob)] = (sp, job) =>
+      sp.GetRequiredService<TelegramService>().SendQuizAsync((SendQuizJob)job)
     ,
-    [typeof(ProcessQuizCallbackJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleCallbackAsync((ProcessQuizCallbackJob)job)
+  [typeof(ProcessQuizCallbackJob)] = (sp, job) =>
+      sp.GetRequiredService<VerificationServiceROP>().HandleCallbackAsync((ProcessQuizCallbackJob)job)
     ,
-    [typeof(ChatJoinRequestJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HandleChatJoinRequestAsync((ChatJoinRequestJob)job)
+  [typeof(ChatJoinRequestJob)] = (sp, job) =>
+      sp.GetRequiredService<TelegramService>().HandleChatJoinRequestAsync((ChatJoinRequestJob)job)
     ,
-    [typeof(EditMessageJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HandleEditMessageAsync((EditMessageJob)job)
+  [typeof(EditMessageJob)] = (sp, job) =>
+      sp.GetRequiredService<TelegramService>().HandleEditMessageAsync((EditMessageJob)job)
     ,
-    [typeof(RedisKeyEventJob)] = (sp, job) =>
-        sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync((RedisKeyEventJob)job)
+  [typeof(RedisKeyEventJob)] = (sp, job) =>
+      sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync((RedisKeyEventJob)job)
     ,
-    [typeof(SendQuizCallbackJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleSendQuizCallback((SendQuizCallbackJob)job)
+  [typeof(SendQuizCallbackJob)] = (sp, job) =>
+      sp.GetRequiredService<VerificationServiceROP>().HandleSendQuizCallback((SendQuizCallbackJob)job)
 };
 
 builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
@@ -58,15 +57,14 @@ builder.Services.AddHostedService(sp => (FunctionalTaskDispatcher)sp.GetRequired
 
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
-if (string.IsNullOrEmpty(redisConnectionString))
-{
-    throw new Exception("Redis connection string is not configured.");
+if (string.IsNullOrEmpty(redisConnectionString)) {
+  throw new Exception("Redis connection string is not configured.");
 }
 
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString)
 );
-builder.Services.AddSingleton(sp => 
+builder.Services.AddSingleton(sp =>
     sp.GetRequiredService<IConnectionMultiplexer>().GetDatabase());
 
 // Register rate limiter
