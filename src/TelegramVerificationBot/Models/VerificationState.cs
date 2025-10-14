@@ -13,3 +13,5 @@ namespace TelegramVerificationBot.Models;
 // }
 
 public record VerificationState(long UserId, long ChatId);
+
+public record BVerificationState(int MessageId, long MessageChatId, bool IsInChat);

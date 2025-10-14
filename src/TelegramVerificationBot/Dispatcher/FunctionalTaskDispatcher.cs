@@ -25,8 +25,8 @@ public class FunctionalTaskDispatcher(
       try {
         // Rate limiting logic
         if (job is StartVerificationJob svj) {
-          while (!await rateLimiter.AllowStartVerificationAsync(svj.Requester.From.Id, svj.Requester.Chat.Id) && !stoppingToken.IsCancellationRequested) {
-            logger.LogInformation("Rate limit hit for user {UserId} on StartVerification. Waiting...", svj.Requester.From.Id);
+          while (!await rateLimiter.AllowStartVerificationAsync(svj.UserId, svj.ChatId) && !stoppingToken.IsCancellationRequested) {
+            logger.LogInformation("Rate limit hit for user {UserId} on StartVerification. Waiting...", svj.UserId);
             await Task.Delay(1000, stoppingToken);
           }
         } else if (job is ProcessQuizCallbackJob pcj) {

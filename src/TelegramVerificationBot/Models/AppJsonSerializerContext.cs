@@ -9,6 +9,7 @@ namespace TelegramVerificationBot.Models;
 [JsonSerializable(typeof(Quiz))]
 [JsonSerializable(typeof(List<Quiz>))]
 [JsonSerializable(typeof(VerificationState))]
+[JsonSerializable(typeof(BVerificationState))]
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNameCaseInsensitive = true)]
 public partial class AppJsonSerializerContext : JsonSerializerContext {
 }

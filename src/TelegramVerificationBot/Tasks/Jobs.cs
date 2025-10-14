@@ -8,9 +8,15 @@ namespace TelegramVerificationBot.Tasks;
 
 public record ChatJoinRequestJob(long User, long Chat, bool Approve);
 public record EditMessageJob(long ChatId, int MessageId, string NewText);
-public record ProcessQuizCallbackJob(string CallbackData, User User, Message Message);
+public record ProcessQuizCallbackJob(string CallbackData, string QueryId, User User, Message Message);
 public record RedisKeyEventJob(string Key, string Event);
 public record RespondToPingJob(long ChatId);
-public record SendQuizJob(long UserChatId, User User, Chat Chat, string Question, List<OptionWithToken> OptionsWithTokens, ChatInviteLink? Link);
+public record SendQuizJob(long ChatId, string? ChatTitle, string Question, long UserId, string UserFirstName, long UserChatId, List<OptionWithToken> OptionsWithTokens);
 public record SendQuizCallbackJob(long UserId, long ChatId, int MessageId, long MessageChatId);
-public record StartVerificationJob(ChatJoinRequest Requester);
+// public record StartVerificationJob(ChatJoinRequest Requester);
+public record StartVerificationJob(long UserId, long ChatId, long UserChatId, string UserFirstName, string InviteLink, string? ChatTitle);
+public record BanUserJob(long ChatId, long UserId);
+public record UnBanUserJob(long ChatId, long UserId, bool OnlyIfBanned);
+public record RestrictUserJob(long ChatId, long UserId, ChatPermissions Permissions, DateTime? UntilDate);
+public record DeleteMessageJob(int MessageId, long ChatId);
+public record QuizCallbackQueryJob(string QueryId, string Text);

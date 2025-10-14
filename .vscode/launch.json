@@ -5,12 +5,15 @@
             "name": ".NET Core Launch (Console)",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "build-debug",
-            "program": "${workspaceFolder}/bin/Debug/net9.0/TelegramVerificationBot.dll",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/TelegramVerificationBot/bin/Debug/net9.0/TelegramVerificationBot.dll",
             "args": [],
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/src/TelegramVerificationBot",
             "console": "internalConsole",
-            "stopAtEntry": false
+            "stopAtEntry": false,
+            "env": {
+                "DOTNET_ENVIRONMENT": "Development"
+            }
         },
         {
             "name": ".NET Core Attach",

@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.Text.Json;
-using System.Threading.Tasks;
 using CSharpFunctionalExtensions;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -12,20 +9,20 @@ using TelegramVerificationBot.Dispatcher;
 using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Services;
 using TelegramVerificationBot.Tasks;
-using Xunit;
 
-namespace TelegramVerificationBot.Tests.Services;
+// CSharpFunctionalExtensions.FluentAssertions using 已被移除
+
+namespace TelegramVerificationBot.Tests;
 
 public class VerificationServiceROPTests {
-  // --- Mocks for all dependencies ---
+  #region Setup
+
   private readonly Mock<ILogger<VerificationServiceROP>> _loggerMock;
   private readonly Mock<ITaskDispatcher> _dispatcherMock;
   private readonly Mock<IDatabase> _redisDbMock;
   private readonly Mock<IQuizService> _quizServiceMock;
   private readonly AppJsonSerializerContext _jsonContext;
-
-  // --- The Service Under Test ---
-  private readonly VerificationServiceROP _service;
+  private readonly VerificationServiceROP _sut; // System Under Test
 
   public VerificationServiceROPTests() {
     _loggerMock = new Mock<ILogger<VerificationServiceROP>>();
@@ -35,7 +32,7 @@ public class VerificationServiceROPTests {
 
     _jsonContext = new AppJsonSerializerContext(new JsonSerializerOptions());
 
-    _service = new VerificationServiceROP(
+    _sut = new VerificationServiceROP(
         _loggerMock.Object,
         _dispatcherMock.Object,
         _redisDbMock.Object,
@@ -44,94 +41,198 @@ public class VerificationServiceROPTests {
     );
   }
 
-  // Test Case 1: Happy Path
+  #endregion
+
+  #region Pure Function: PrepareQuiz Tests
+
   [Fact]
-  public async Task HandleStartVerificationAsync_WhenUserIsNewAndQuizIsAvailable_ShouldDispatchSendQuizJob() {
+  public void PrepareQuiz_ShouldSucceed_WhenQuizServiceReturnsAQuiz() {
     // Arrange
-    var user = new User { Id = 123, FirstName = "Test" };
-    var chat = new Chat { Id = 456, Title = "Test Chat" };
-    var job = new StartVerificationJob(new ChatJoinRequest { From = user, Chat = chat, UserChatId = 789 });
-
-    var quiz = new Quiz(1, "Question?", new List<string> { "A", "B" }, 0);
-
-    _redisDbMock.Setup(db => db.KeyExistsAsync($"user_status:{user.Id}:{chat.Id}", CommandFlags.None))
-                .ReturnsAsync(false);
-
-    _quizServiceMock.Setup(qs => qs.GetRandomQuiz()).Returns(Maybe<Quiz>.From(quiz));
-
-    _redisDbMock.Setup(db => db.StringSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<TimeSpan?>(), It.IsAny<When>(), It.IsAny<CommandFlags>()))
-                .ReturnsAsync(true);
+    var quiz = new Quiz(
+        Id: 1,
+        Question: "What is 2+2?",
+        Options: ["3", "4", "5"],
+        CorrectOptionIndex: 1
+    );
+    _quizServiceMock.Setup(s => s.GetRandomQuiz()).Returns(quiz);
 
     // Act
-    await _service.HandleStartVerificationAsync(job);
+    Result<VerificationServiceROP.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
 
     // Assert
-    _dispatcherMock.Verify(
-        d => d.DispatchAsync(It.Is<SendQuizJob>(j => j.User.Id == user.Id && j.Chat.Id == chat.Id)),
-        Times.Once
-    );
+    result.IsSuccess.Should().BeTrue();
+
+    var quizData = result.Value;
+    quizData.Question.Should().Be(quiz.Question);
+    quizData.OptionsWithTokens.Should().HaveCount(quiz.Options.Count);
+    quizData.OptionsWithTokens.Select(o => o.Option).Should().BeEquivalentTo(quiz.Options);
+
+    var originalCorrectOptionText = quiz.Options[quiz.CorrectOptionIndex];
+    var correctOptionWithToken = quizData.OptionsWithTokens.Single(o => o.Token == quizData.CorrectToken);
+    correctOptionWithToken.Option.Should().Be(originalCorrectOptionText);
+
+    foreach (var option in quizData.OptionsWithTokens) {
+      Guid.TryParse(option.Token, out _).Should().BeTrue();
+    }
   }
 
-  // Test Case 2: Failure Path
   [Fact]
-  public async Task HandleStartVerificationAsync_WhenUserIsAlreadyPending_ShouldNotDispatchAnyJob() {
+  public void PrepareQuiz_ShouldFail_WhenQuizServiceReturnsNoQuiz() {
     // Arrange
-    var user = new User { Id = 123, FirstName = "Test" };
-    var chat = new Chat { Id = 456, Title = "Test Chat" };
-    var job = new StartVerificationJob(new ChatJoinRequest { From = user, Chat = chat, UserChatId = 789 });
-
-    _redisDbMock.Setup(db => db.KeyExistsAsync($"user_status:{user.Id}:{chat.Id}", CommandFlags.None))
-                .ReturnsAsync(true);
+    _quizServiceMock.Setup(s => s.GetRandomQuiz()).Returns((Quiz?)null);
 
     // Act
-    await _service.HandleStartVerificationAsync(job);
+    Result<VerificationServiceROP.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
 
     // Assert
-    _dispatcherMock.Verify(
-        d => d.DispatchAsync(It.IsAny<SendQuizJob>()),
-        Times.Never
-    );
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.NoQuizzesAvailable);
+    result.Error.Message.Should().Be("No quizzes available.");
   }
 
-  // Test Case 3: Callback Happy Path
+  #endregion
+
+  #region Pure Function: ParseCallbackData Tests
+
   [Fact]
-  public async Task HandleCallbackAsync_WhenAnswerIsCorrect_ShouldApproveJoinRequestAndEditMessage() {
+  public void ParseCallbackData_WithValidData_ShouldSucceedAndReturnCorrectInfo() {
     // Arrange
-    var user = new User { Id = 123, FirstName = "Test" };
-    var message = new Message { Id = 555, Chat = new Chat { Id = 789 } };
-    long chatId = 456;
-    string correctToken = "test-token";
-    var job = new ProcessQuizCallbackJob($"{chatId}_{correctToken}", user, message);
-
-    var verificationState = new VerificationState(user.Id, chatId);
-    var stateJson = JsonSerializer.Serialize(verificationState, _jsonContext.VerificationState);
-
-    // 1. Mock user status check to show user is pending
-    _redisDbMock.Setup(db => db.StringGetAsync($"user_status:{user.Id}:{chatId}", CommandFlags.None))
-                .ReturnsAsync(new RedisValue("some-pending-value"));
-
-    // 2. Mock token check to return the correct state, simulating a correct answer
-    _redisDbMock.Setup(db => db.StringGetDeleteAsync($"verification_token:{correctToken}", CommandFlags.None))
-                .ReturnsAsync(new RedisValue(stateJson));
-
-    // 3. Mock user status cleanup
-    _redisDbMock.Setup(db => db.KeyDeleteAsync($"user_status:{user.Id}:{chatId}", CommandFlags.None))
-                .ReturnsAsync(true);
+    long expectedChatId = -100123456789;
+    string expectedToken = Guid.NewGuid().ToString();
+    string callbackData = $"{expectedChatId}_{expectedToken}";
 
     // Act
-    await _service.HandleCallbackAsync(job);
+    var result = _sut.ParseCallbackData(callbackData);
 
     // Assert
-    // 1. Verify that the join request was APPROVED
-    _dispatcherMock.Verify(
-        d => d.DispatchAsync(It.Is<ChatJoinRequestJob>(j => j.User == user.Id && j.Chat == chatId && j.Approve)),
-        Times.Once
-    );
-
-    // 2. Verify that the message was edited with a success text
-    _dispatcherMock.Verify(
-        d => d.DispatchAsync(It.Is<EditMessageJob>(j => j.MessageId == message.Id && j.NewText.Contains("验证通过"))),
-        Times.Once
-    );
+    result.IsSuccess.Should().BeTrue();
+    result.Value.ChatId.Should().Be(expectedChatId);
+    result.Value.Token.Should().Be(expectedToken);
   }
+
+  [Theory]
+  [InlineData("invalid_format")]
+  [InlineData("12345")]
+  [InlineData("_sometoken")]
+  [InlineData("not_a_long_sometoken")]
+  [InlineData("")]
+  public void ParseCallbackData_WithInvalidFormat_ShouldReturnFailure(string invalidCallbackData) {
+    // Arrange & Act
+    var result = _sut.ParseCallbackData(invalidCallbackData);
+
+    // Assert
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.InvalidCallbackData);
+  }
+
+  [Fact]
+  public void ParseCallbackData_WithNullInput_ShouldThrowArgumentNullException() {
+    // Arrange
+    Action act = () => _sut.ParseCallbackData(null!); // 使用 ! 来告诉编译器我们故意这么做
+
+    // Assert
+    act.Should().Throw<ArgumentNullException>()
+       .WithParameterName("callbackData"); // 进一步断言是哪个参数出的问题
+  }
+
+  #endregion
+
+  #region Pure Function: DeserializeState Tests
+
+  [Fact]
+  public void DeserializeState_WithValidJson_ShouldSucceed() {
+    // Arrange
+    var expectedState = new VerificationState(UserId: 12345, ChatId: 67890);
+    var stateJson = JsonSerializer.Serialize(expectedState, _jsonContext.VerificationState);
+
+    // Act
+    var result = _sut.DeserializeState(stateJson);
+
+    // Assert
+    result.IsSuccess.Should().BeTrue();
+    result.Value.Should().Be(expectedState);
+  }
+
+  [Fact]
+  public void DeserializeState_WithInvalidJson_ShouldFail() {
+    // Arrange
+    var invalidJson = "{\"UserId\":123, \"ChatId\":\"not_a_long\"}";
+
+    // Act
+    var result = _sut.DeserializeState(invalidJson);
+
+    // Assert
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.StateDeserializationFailed);
+  }
+
+  [Fact]
+  public void DeserializeState_WithNullJson_ShouldFail() {
+    // Arrange
+    var nullJson = "null";
+
+    // Act
+    var result = _sut.DeserializeState(nullJson);
+
+    // Assert
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.StateDeserializationFailed);
+    result.Error.Message.Should().Be("Deserialized state is null.");
+  }
+
+  #endregion
+
+  #region Pure Function: ValidateState Tests
+
+  [Fact]
+  public void ValidateState_WithMatchingUserAndChat_ShouldSucceed() {
+    // Arrange
+    long userId = 12345;
+    long chatId = 67890;
+    var user = new User { Id = userId };
+    var state = new VerificationState(UserId: userId, ChatId: chatId);
+
+    // Act
+    var result = _sut.ValidateState(state, user, chatId);
+
+    // Assert
+    result.IsSuccess.Should().BeTrue();
+    result.Value.Should().Be(state);
+  }
+
+  [Fact]
+  public void ValidateState_WithMismatchedUserId_ShouldFail() {
+    // Arrange
+    long stateUserId = 12345;
+    long actualUserId = 99999; // Mismatch
+    long chatId = 67890;
+    var user = new User { Id = actualUserId };
+    var state = new VerificationState(UserId: stateUserId, ChatId: chatId);
+
+    // Act
+    var result = _sut.ValidateState(state, user, chatId);
+
+    // Assert
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.StateValidationFailed);
+  }
+
+  [Fact]
+  public void ValidateState_WithMismatchedChatId_ShouldFail() {
+    // Arrange
+    long userId = 12345;
+    long stateChatId = 67890;
+    long actualChatId = 88888; // Mismatch
+    var user = new User { Id = userId };
+    var state = new VerificationState(UserId: userId, ChatId: stateChatId);
+
+    // Act
+    var result = _sut.ValidateState(state, user, actualChatId);
+
+    // Assert
+    result.IsFailure.Should().BeTrue();
+    result.Error.Kind.Should().Be(VerificationErrorKind.StateValidationFailed);
+  }
+
+  #endregion
 }

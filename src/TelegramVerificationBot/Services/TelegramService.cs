@@ -37,6 +37,7 @@ public class TelegramService(
     _dbConnection = new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString);
     _dbConnection.Open();
     _bot = new Bot(botToken: settings.Value.BotToken, apiId: int.Parse(settings.Value.ApiId), apiHash: settings.Value.ApiHash, dbConnection: _dbConnection);
+    _bot.Manager.Log = (level, message) => logger.LogDebug("WTelegram: {Message}", message);
     _bot.OnMessage += OnMessage;
     _bot.OnError += async (e, s) => {
       logger.LogError(e, "WTelegram error: {State}", s);
@@ -52,13 +53,73 @@ public class TelegramService(
     switch (update) {
       case { ChatJoinRequest: not null } cjr:
         logger.LogInformation("New chat join request from user {UserId} for chat {ChatId}", cjr.ChatJoinRequest.From.Id, cjr.ChatJoinRequest.Chat.Id);
-        await dispatcher.DispatchAsync(new StartVerificationJob(cjr.ChatJoinRequest));
+        await dispatcher.DispatchAsync(new StartVerificationJob(
+          UserId: cjr.ChatJoinRequest.From.Id,
+          ChatId: cjr.ChatJoinRequest.Chat.Id,
+          UserChatId: cjr.ChatJoinRequest.From.Id,
+          UserFirstName: cjr.ChatJoinRequest.From.FirstName,
+          InviteLink: cjr.ChatJoinRequest.InviteLink?.InviteLink ?? string.Empty,
+          ChatTitle: cjr.ChatJoinRequest.Chat.Title
+        ));
         break;
 
+      case {
+        ChatMember: {
+          NewChatMember: {
+            User: {
+              IsBot: false,
+              Id: var userId,
+              FirstName: var firstName
+            },
+            Status: ChatMemberStatus.Member
+          },
+          OldChatMember: {
+            Status:
+            not ChatMemberStatus.Member and
+            not ChatMemberStatus.Administrator and
+            not ChatMemberStatus.Creator and
+            not ChatMemberStatus.Restricted
+          } or null,
+          From.Id: var fromId,
+          Chat: {
+            Id: var chatId,
+            Title: var chatTitle
+          }
+        }
+      }: {
+          var inviterStatus = (await _bot!.GetChatMember(chatId, fromId)).Status;
+          switch (inviterStatus) {
+            case ChatMemberStatus.Administrator:
+            case ChatMemberStatus.Creator:
+              logger.LogInformation(
+                "Invitation from admin or creator for user {UserId} in chat {ChatTitle}, ignoring.",
+                userId,
+                chatTitle);
+              break;
+
+            default:
+              logger.LogInformation(
+                "Invitation from regular member for user {UserId} in chat {ChatTitle}, starting verification.",
+                userId,
+                chatTitle);
+              var startVerf = dispatcher.DispatchAsync(new StartVerificationJob(
+                UserId: userId,
+                ChatId: chatId,
+                UserChatId: chatId,
+                UserFirstName: firstName,
+                InviteLink: string.Empty,
+                ChatTitle: chatTitle
+              ));
+              await Task.WhenAll(startVerf);
+              break;
+          }
+          break;
+        }
+
       // REFACTOR 1: Combine null-check into the pattern match for a clearer, more declarative style.
-      case { CallbackQuery: { Data: not null, Message: not null } } cq:
+      case { CallbackQuery: { Data: not null, Message: not null, Id: var queryId } } cq:
         logger.LogInformation("New callback query from user {UserId} with data: {Data}", cq.CallbackQuery.From.Id, cq.CallbackQuery.Data);
-        await dispatcher.DispatchAsync(new ProcessQuizCallbackJob(cq.CallbackQuery.Data, cq.CallbackQuery.From, cq.CallbackQuery.Message));
+        await dispatcher.DispatchAsync(new ProcessQuizCallbackJob(cq.CallbackQuery.Data, queryId, cq.CallbackQuery.From, cq.CallbackQuery.Message));
         break;
 
       case { CallbackQuery: not null } cq:
@@ -131,23 +192,32 @@ public class TelegramService(
   /// Sends a quiz message to a user with inline keyboard options.
   /// </summary>
   public async Task SendQuizAsync(SendQuizJob job) {
-    var (chat, question, user, userChatId, optionsWithTokens) =
-        (job.Chat, job.Question, job.User, job.UserChatId, job.OptionsWithTokens);
+    (long chatId, string? chatTitle, string question, long userId, string? userFirstName, long userChatId, List<OptionWithToken> optionsWithTokens) =
+        (job.ChatId, job.ChatTitle, job.Question, job.UserId, job.UserFirstName, job.UserChatId, job.OptionsWithTokens);
 
-    logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", user.Id, chat.Id, question);
+    logger.LogInformation("Sending quiz to user {UserId} for chat {ChatId}: {QuizQuestion}", userId, chatId, question);
 
     var buttons = optionsWithTokens
-        .Select(item => new[] { CreateQuizButton(item.Option, chat.Id, item.Token) }) // REFACTOR 2: Use helper
+        .Select(item => new[] { CreateQuizButton(item.Option, chatId, item.Token) }) // REFACTOR 2: Use helper
         .ToArray();
 
     var inlineKeyboard = new InlineKeyboardMarkup(buttons);
-    var replyMessage = FormatWelcomeMessage(user, chat, question); // REFACTOR 3: Use helper
+    var replyMessage = FormatWelcomeMessage(userFirstName, userId, chatTitle, chatId, question); // REFACTOR 3: Use helper
 
     var result = await _bot!.SendMessage(
       userChatId, replyMessage,
-      parseMode: ParseMode.MarkdownV2,
+      parseMode: ParseMode.Html,
+      protectContent: true,
       replyMarkup: inlineKeyboard);
-    await dispatcher.DispatchAsync(new SendQuizCallbackJob(user.Id, chat.Id, result!.Id, userChatId));
+    await dispatcher.DispatchAsync(new SendQuizCallbackJob(userId, chatId, result!.Id, userChatId));
+  }
+
+  /// <summary>
+  /// Answer a queryback from a quiz button press.
+  /// </summary>
+  public async Task QuizCallbackQueryAsync(QuizCallbackQueryJob job) {
+    await _bot!.AnswerCallbackQuery(job.QueryId, job.Text, showAlert: true);
+    logger.LogInformation("Answered quiz callback query {QueryId} with text: {Text}", job.QueryId, job.Text);
   }
 
   /// <summary>
@@ -173,6 +243,51 @@ public class TelegramService(
     logger.LogInformation("Edited message {MessageId} in chat {ChatId}", job.MessageId, job.ChatId);
   }
 
+  /// <summary>
+  /// Deletes a message
+  /// </summary>
+  public async Task HandleDeleteMessageAsync(DeleteMessageJob job) {
+    await _bot!.DeleteMessages(job.ChatId, [job.MessageId]);
+    logger.LogInformation("Deleted message {MessageId} in chat {ChatId}", job.MessageId, job.ChatId);
+  }
+
+
+  /// <summary>
+  /// Ban an user from a chat.
+  /// </summary>
+  public async Task HnadleBanUserAsync(BanUserJob job) {
+    await _bot!.BanChatMember(
+      job.ChatId,
+      job.UserId
+    );
+    logger.LogInformation("Banned user {UserId} from chat {ChatId}", job.UserId, job.ChatId);
+  }
+
+  /// <summary>
+  /// Unban an user from a chat.
+  /// </summary>
+  public async Task HnadleUnBanUserAsync(UnBanUserJob job) {
+    await _bot!.UnbanChatMember(
+      job.ChatId,
+      job.UserId,
+      job.OnlyIfBanned
+    );
+    logger.LogInformation("Unbanned user {UserId} from chat {ChatId}", job.UserId, job.ChatId);
+  }
+
+  /// <summary>
+  /// Restrict an user in a chat. (At present, just prevents sending messages.)
+  /// </summary>
+  public async Task HnadleRestrictUserAsync(RestrictUserJob job) {
+    await _bot!.RestrictChatMember(
+      job.ChatId,
+      job.UserId,
+      job.Permissions,
+      job.UntilDate
+    );
+    logger.LogInformation("Restricted user {UserId} in chat {ChatId}", job.UserId, job.ChatId);
+  }
+
   // --- Helper Functions ---
 
   /// <summary>
@@ -180,6 +295,12 @@ public class TelegramService(
   /// </summary>
   public static string MentionMarkdownV2(string username, long userid) =>
       $"[{EscapeMarkdownV2(username)}](tg://user?id={userid})";
+
+  /// <summary>
+  /// Formats a user mention using HTML style for Telegram.
+  /// </summary>
+  public static string MentionHTML(string username, long userid) =>
+      $"<a href=\"tg://user?id={userid}\">{username}</a>";
 
   /// <summary>
   /// Creates an inline keyboard button for a quiz option.
@@ -194,10 +315,18 @@ public class TelegramService(
   /// <summary>
   /// Formats the welcome message sent to a user with a quiz question.
   /// </summary>
-  private static string FormatWelcomeMessage(Telegram.Bot.Types.User user, Telegram.Bot.Types.Chat chat, string question) {
-    var chatTitle = string.IsNullOrEmpty(chat.Title) ? chat.Id.ToString() : chat.Title;
-    var mention = MentionMarkdownV2(EscapeMarkdownV2(user.FirstName), user.Id);
-    return $"*欢迎 {mention} 来到 {chatTitle} ！* \n问题: {EscapeMarkdownV2(question)}";
+  private static string FormatWelcomeMessage(string? userFirstName, long userId, string? chatTitle, long chatId, string question) {
+
+    var chatTitle_ = string.IsNullOrEmpty(chatTitle) ? chatId.ToString() : chatTitle;
+    var userFirstName_ = string.IsNullOrEmpty(userFirstName) ? userId.ToString() : userFirstName;
+    var mention = MentionHTML(userFirstName_, userId);
+    return $"""
+      <b>欢迎 {mention} 来到 {chatTitle_} ！</b>
+      问题: {question}
+      请在 3 分钟内完成验证，否则入群请求将被拒绝。
+      <a href="https://t.me/addlist/UEpWJGzDD6A1Y2I1">点我以加入TG米游群组豪华套餐！</a>
+      """;
+
   }
 
   private static readonly Regex _markdownV2EscapeRegex =
@@ -213,4 +342,22 @@ public class TelegramService(
     // 替换模式 @"\$1" 会在每个匹配到的特殊字符（捕获组 1）前加上一个反斜杠 `\`。
     return _markdownV2EscapeRegex.Replace(text, @"\$1");
   }
+
+  public static ChatPermissions FullRestrictPermissions() =>
+    new() {
+      CanSendMessages = false,
+      CanAddWebPagePreviews = false,
+      CanChangeInfo = false,
+      CanInviteUsers = false,
+      CanPinMessages = false,
+      CanManageTopics = false,
+      CanSendAudios = false,
+      CanSendDocuments = false,
+      CanSendPhotos = false,
+      CanSendVideos = false,
+      CanSendVideoNotes = false,
+      CanSendVoiceNotes = false,
+      CanSendPolls = false,
+      CanSendOtherMessages = false
+    };
 }
