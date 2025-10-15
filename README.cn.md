@@ -27,7 +27,7 @@
     创建一个名为 `docker-compose.yml` 的文件，并填入以下内容：
     ```yaml
     version: '3.8'
-
+    
     services:
       tgverifbot:
         image: ghcr.io/opaimon/tgverifbot:main
@@ -40,14 +40,16 @@
           - ConnectionStrings__Redis=redis:6379
         volumes:
           - ./data:/app/data:z
+          - ./logs:/app/logs:z
         depends_on:
           - redis
-
+    
       redis:
         image: "docker.io/library/redis:alpine"
         restart: unless-stopped
         volumes:
           - ./redis-data:/data:z
+        command: redis-server --notify-keyspace-events Ex
     ```
 
 3.  **创建 `.env` 配置文件**
@@ -83,9 +85,19 @@
 
 此方法适用于在不使用 Docker 的 Linux 服务器上进行部署。
 
-#### 1. 克隆仓库并安装 .NET SDK
+#### 前提条件
 
-首先，克隆本仓库到您的服务器上，并确保您已经安装了 [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)。
+- **.NET 9.0 SDK:** 确保您已经安装了 [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)。
+- **Redis:** 您需要一个正在运行的 Redis 实例。
+  - **重要提示:** 您必须启用 Redis 的[键空间通知](https://redis.io/docs/latest/develop/interact/keyspace-notifications/)功能。连接到您的 Redis 服务器并运行以下命令：
+    ```
+    CONFIG SET notify-keyspace-events Ex
+    ```
+    为确保此配置在重启后依然生效，请将其添加到您的 `redis.conf` 文件中。
+
+#### 1. 克隆仓库
+
+首先，克隆本仓库到您的服务器上。
 
 ```bash
 git clone https://github.com/opaimon/tgverifbot.git
@@ -99,19 +111,19 @@ cd tgverifbot
 -   **为体积优化 (推荐):**
     这将生成一个经过裁剪和 ReadyToRun 优化的独立可执行文件，体积最小。
     ```bash
-    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
     ```
 
 -   **为最大化兼容性:**
     这将生成一个未经裁剪的独立可执行文件，体积较大，但兼容性最好。
     ```bash
-    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
     ```
 
 -   **框架依赖型:**
     这将生成一个依赖于服务器上已安装的 .NET 9.0 运行时的版本。
     ```bash
-    dotnet publish -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -o ./publish
     ```
 
 #### 3. 部署文件
@@ -125,10 +137,11 @@ cd tgverifbot
     # 复制构建产物
     sudo cp -r ./publish/* /opt/tgverifbot/
     ```
-2.  您还需要一同拷贝数据文件。
+2.  您还需要一同拷贝数据和日志目录。
     ```bash
     sudo mkdir -p /opt/tgverifbot/data
-    sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
+    sudo mkdir -p /opt/tgverifbot/logs
+    sudo cp src/TelegramVerificationBot/data/quizzes.json /opt/tgverifbot/data/quizzes.json
     ```
 
 #### 4. 创建环境配置文件
@@ -143,12 +156,17 @@ sudo nano /etc/tgverifbot/config.env
 将您的配置添加到此文件中。请注意，变量名与 `appsettings.json` 中的结构相匹配，但使用双下划线 `__` 作为分隔符。
 
 ```ini
+# Telegram API 设置
 TelegramSettings__BotToken=YOUR_BOT_TOKEN_HERE
 TelegramSettings__ApiId=YOUR_API_ID_HERE
 TelegramSettings__ApiHash=YOUR_API_HASH_HERE
-ConnectionStrings__Redis=localhost:6379
 
-# 重要：请将这些路径更新为您的实际部署路径
+# 连接字符串
+ConnectionStrings__Redis=localhost:6379
+ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationBot.sqlite
+
+# 路径设置 (重要：请将这些路径更新为您的实际部署路径)
+PathSettings__LogPath=/opt/tgverifbot/logs
 QuizFilePath=/opt/tgverifbot/data/quizzes.json
 ```
 

@@ -28,17 +28,22 @@ jobs:
   publish-artifacts:
     needs: test # 依赖于 test Job
     runs-on: ubuntu-latest
-    
+
     strategy:
       matrix:
-        # 定义矩阵，这将启动两个并行的构建
+        # 定义矩阵，这将启动三个并行的构建
         config:
-          - name: linux-x64-sc
-            # 修正 #2: 将 runtime flag 作为一个整体
-            runtime_flag: "-r linux-x64" 
+          - name: linux-x64-self-contained-trimmed-r2r # Self-Contained, Trimmed, ReadyToRun
+            runtime_flag: "-r linux-x64"
+            self_contained_flag: "--self-contained"
             flags: "/p:PublishReadyToRun=true /p:PublishTrimmed=true"
+          - name: linux-x64-self-contained-r2r # Self-Contained, ReadyToRun (Not Trimmed)
+            runtime_flag: "-r linux-x64"
+            self_contained_flag: "--self-contained"
+            flags: "/p:PublishReadyToRun=true"
           - name: framework-dependent
-            runtime_flag: "" # 依赖框架构建不需要 runtime flag
+            runtime_flag: ""
+            self_contained_flag: "--no-self-contained"
             flags: ""
 
     steps:
@@ -48,14 +53,13 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
-      
+
       - name: Publish Artifact (${{ matrix.config.name }})
-        # 修正 #1: 增加超时时间
-        timeout-minutes: 15 
+        timeout-minutes: 15
         run: >
           dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj
           -c Release
-          --self-contained
+          ${{ matrix.config.self_contained_flag }}
           ${{ matrix.config.runtime_flag }}
           ${{ matrix.config.flags }}
           -o ./release-artifacts/${{ matrix.config.name }}

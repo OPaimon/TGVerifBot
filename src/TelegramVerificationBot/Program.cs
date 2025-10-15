@@ -10,36 +10,40 @@ using TelegramVerificationBot.Services;
 using TelegramVerificationBot.Tasks;
 using WTelegram;
 
-// Configure Serilog logger programmatically
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .MinimumLevel.Override("System", LogEventLevel.Warning)
-    .MinimumLevel.Override("WTelegram", LogEventLevel.Warning) // Filter WTelegram logs
-    .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File("logs/bot-.log",
-        rollingInterval: RollingInterval.Day,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
-    .CreateLogger();
 
-// Redirect WTelegram's static logger to the Serilog pipeline
-var wtelegramLogger = Log.ForContext("SourceContext", "WTelegram");
-Helpers.Log = (level, message) => {
-  var logLevel = level switch {
-    0 => LogEventLevel.Debug,
-    1 => LogEventLevel.Information,
-    2 => LogEventLevel.Warning,
-    3 => LogEventLevel.Error,
-    _ => LogEventLevel.Information
-  };
-  wtelegramLogger.Write(logLevel, message);
-};
+
 
 try {
   Log.Information("Starting application host");
 
   var builder = Host.CreateApplicationBuilder(args);
+  string logsPath = builder.Configuration.GetSection("PathSettings")?.GetValue<string>("LogPath") ?? "logs";
+
+  // Configure Serilog logger programmatically
+  Log.Logger = new LoggerConfiguration()
+      .MinimumLevel.Information()
+      .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+      .MinimumLevel.Override("System", LogEventLevel.Warning)
+      .MinimumLevel.Override("WTelegram", LogEventLevel.Warning) // Filter WTelegram logs
+      .Enrich.FromLogContext()
+      .WriteTo.Console()
+      .WriteTo.File($"{logsPath}/bot-.log",
+          rollingInterval: RollingInterval.Day,
+          outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+      .CreateLogger();
+
+  // Redirect WTelegram's static logger to the Serilog pipeline
+  var wtelegramLogger = Log.ForContext("SourceContext", "WTelegram");
+  Helpers.Log = (level, message) => {
+    var logLevel = level switch {
+      0 => LogEventLevel.Debug,
+      1 => LogEventLevel.Information,
+      2 => LogEventLevel.Warning,
+      3 => LogEventLevel.Error,
+      _ => LogEventLevel.Information
+    };
+    wtelegramLogger.Write(logLevel, message);
+  };
 
   // Replace default logging with Serilog
   builder.Logging.ClearProviders();

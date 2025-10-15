@@ -3,9 +3,18 @@ Description=Telegram Verification Bot
 After=network.target
 
 [Service]
+# It's recommended to create a dedicated user to run the service
 User=tgverifbot
 WorkingDirectory=/opt/tgverifbot
 ExecStart=/opt/tgverifbot/TelegramVerificationBot
+# The EnvironmentFile should contain variables like:
+# TelegramSettings__BotToken=...
+# TelegramSettings__ApiId=...
+# TelegramSettings__ApiHash=...
+# ConnectionStrings__Redis=localhost:6379
+# ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationBot.sqlite
+# PathSettings__LogPath=/opt/tgverifbot/logs
+# QuizFilePath=/opt/tgverifbot/data/quizzes.json
 EnvironmentFile=/etc/tgverifbot/config.env
 Restart=always
 RestartSec=10

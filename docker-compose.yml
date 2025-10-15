@@ -12,6 +12,7 @@ services:
       - ConnectionStrings__Redis=redis:6379
     volumes:
       - ./data:/app/data:z
+      - ./logs:/app/logs:z
     depends_on:
       - redis
 
@@ -20,3 +21,5 @@ services:
     restart: unless-stopped
     volumes:
       - ./redis-data:/data:z
+    command: redis-server --notify-keyspace-events Ex
+

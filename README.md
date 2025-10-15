@@ -79,13 +79,94 @@ This is the easiest way to deploy the bot, as it does not require cloning the so
 
 ---
 
+### Option 1: Deploying with Docker Compose (Recommended)
+
+This is the easiest way to deploy the bot, as it does not require cloning the source code.
+
+1.  **Create a Project Directory**
+
+    Create a directory on your server where you will store the configuration and data.
+    ```bash
+    mkdir tgverifbot
+    cd tgverifbot
+    ```
+
+2.  **Create a `docker-compose.yml` File**
+
+    Create a file named `docker-compose.yml` with the following content:
+    ```yaml
+    version: '3.8'
+
+    services:
+      tgverifbot:
+        image: ghcr.io/opaimon/tgverifbot:main
+        restart: unless-stopped
+        user: "${UID}:${GID}"
+        environment:
+          - TelegramSettings__BotToken=${TELEGRAM_BOT_TOKEN}
+          - TelegramSettings__ApiId=${TELEGRAM_API_ID}
+          - TelegramSettings__ApiHash=${TELEGRAM_API_HASH}
+          - ConnectionStrings__Redis=redis:6379
+        volumes:
+          - ./data:/app/data:z
+          - ./logs:/app/logs:z
+        depends_on:
+          - redis
+
+      redis:
+        image: "docker.io/library/redis:alpine"
+        restart: unless-stopped
+        volumes:
+          - ./redis-data:/data:z
+        command: redis-server --notify-keyspace-events Ex
+    ```
+
+3.  **Create a `.env` Configuration File**
+
+    In the same directory, create a file named `.env` to store your secrets:
+
+    ```env
+    # Your Telegram Bot Token
+    TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+    
+    # Your ApiId from my.telegram.org
+    TELEGRAM_API_ID=12345678
+    
+    # Your ApiHash from my.telegram.org
+    TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
+    ```
+
+4.  **Start the Services**
+
+    Run the following command to download the images and start the containers:
+    ```bash
+    docker-compose up -d
+    ```
+
+#### Managing the Service
+-   **View logs:** `docker-compose logs -f tgverifbot`
+-   **Stop the services:** `docker-compose down`
+-   **Update the bot:** `docker-compose pull` followed by `docker-compose up -d` (if you choose not to use `pull_policy`).
+
+---
+
 ### Option 2: Building and Deploying from Source (without Docker)
 
 This method is for deploying on a Linux server without Docker.
 
-#### 1. Clone Repository and Install .NET SDK
+#### Prerequisites
 
-First, clone this repository to your server and ensure you have the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) installed.
+- **.NET 9.0 SDK:** Ensure you have the [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) installed.
+- **Redis:** You need a running Redis instance.
+  - **Important:** You must enable Redis [Keyspace Notifications](https://redis.io/docs/latest/develop/interact/keyspace-notifications/). Connect to your Redis server and run the following command:
+    ```
+    CONFIG SET notify-keyspace-events Ex
+    ```
+    To make this setting persistent across restarts, add it to your `redis.conf` file.
+
+#### 1. Clone Repository
+
+First, clone this repository to your server.
 
 ```bash
 git clone https://github.com/opaimon/tgverifbot.git
@@ -99,19 +180,19 @@ You can choose different build methods based on your needs. The build artifacts 
 -   **Optimized for Size (Recommended):**
     This creates a trimmed and ReadyToRun self-contained executable for the smallest size.
     ```bash
-    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -r linux-x64 --self-contained /p:PublishTrimmed=true /p:PublishReadyToRun=true -o ./publish
     ```
 
 -   **Maximum Compatibility:**
     This creates a non-trimmed self-contained executable, which is larger but offers maximum compatibility.
     ```bash
-    dotnet publish TelegramVerificationBot.csproj -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -r linux-x64 --self-contained /p:PublishReadyToRun=true -o ./publish
     ```
 
 -   **Framework-Dependent:**
     This creates a build that requires the .NET 9.0 runtime to be installed on the server.
     ```bash
-    dotnet publish -o ./publish
+    dotnet publish src/TelegramVerificationBot/TelegramVerificationBot.csproj -c Release -o ./publish
     ```
 
 #### 3. Deploy Files
@@ -125,10 +206,11 @@ You can choose different build methods based on your needs. The build artifacts 
     # Copy the build artifacts
     sudo cp -r ./publish/* /opt/tgverifbot/
     ```
-2.  You also need to copy over your data files.
+2.  You also need to copy over your data files and create a logs directory.
     ```bash
     sudo mkdir -p /opt/tgverifbot/data
-    sudo cp ./data/quizzes.json /opt/tgverifbot/data/quizzes.json
+    sudo mkdir -p /opt/tgverifbot/logs
+    sudo cp src/TelegramVerificationBot/data/quizzes.json /opt/tgverifbot/data/quizzes.json
     ```
 
 #### 4. Create Environment Configuration
@@ -143,12 +225,17 @@ sudo nano /etc/tgverifbot/config.env
 Add your configuration to this file. Note that the variable names match the structure in `appsettings.json` but use a double underscore `__` as a separator.
 
 ```ini
+# Telegram API Settings
 TelegramSettings__BotToken=YOUR_BOT_TOKEN_HERE
 TelegramSettings__ApiId=YOUR_API_ID_HERE
 TelegramSettings__ApiHash=YOUR_API_HASH_HERE
-ConnectionStrings__Redis=localhost:6379
 
-# Important: Update these paths to match your deployment location
+# Connection Strings
+ConnectionStrings__Redis=localhost:6379
+ConnectionStrings__Sqlite=Data Source=/opt/tgverifbot/data/TelegramVerificationBot.sqlite
+
+# Path Settings (Important: Update these paths to match your deployment location)
+PathSettings__LogPath=/opt/tgverifbot/logs
 QuizFilePath=/opt/tgverifbot/data/quizzes.json
 ```
 

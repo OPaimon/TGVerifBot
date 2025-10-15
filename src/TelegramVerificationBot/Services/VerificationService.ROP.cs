@@ -128,7 +128,11 @@ public class VerificationServiceROP(
       );
       var sessionJson = JsonSerializer.Serialize(session, jsonContext.VerificationSession);
       var sessionKey = $"verify:session:{sessionId}";
-      var tokenMapKey = $"verify:token_map:{correctToken}";
+      var correctTokenMapKey = $"verify:token_map:{correctToken}";
+      var tokenMapKeyList = quiz.OptionsWithTokens
+        .Where(o => o.Token != correctToken)
+        .Select(o => $"verify:token_map:{o.Token}")
+        .ToList();
       var lookupKey = $"verify:lookup:{job.ChatId}:{job.UserId}";
       var timeoutKey = $"verify:timeout:{job.ChatId}:{job.UserId}";
 
@@ -138,9 +142,12 @@ public class VerificationServiceROP(
       var dataExpiry = triggerExpiry + TimeSpan.FromSeconds(MessageDeletionDelaySeconds);
 
       _ = tran.StringSetAsync(sessionKey, sessionJson, dataExpiry);
-      _ = tran.StringSetAsync(tokenMapKey, sessionId, dataExpiry);
+      _ = tran.StringSetAsync(correctTokenMapKey, sessionId, dataExpiry);
       _ = tran.StringSetAsync(lookupKey, sessionId, dataExpiry);
       _ = tran.StringSetAsync(timeoutKey, sessionId, triggerExpiry);
+      foreach (var key in tokenMapKeyList) {
+        _ = tran.StringSetAsync(key, sessionId, dataExpiry);
+      }
 
       if (await tran.ExecuteAsync()) {
         var storedInfo = new StoredStateInfo<T>(sessionId, correctToken, passThroughValue);
@@ -257,6 +264,10 @@ public class VerificationServiceROP(
         return Result.Success<VerificationSession, VerificationError>(session)
           .Ensure(s => s.UserId == job.User.Id,
               new VerificationError(VerificationErrorKind.UserNotMatch, "该验证不适用于你。"))
+          .Ensure(s => s.OptionsWithTokens.Any(o => o.Token == job.CallbackData),
+              new VerificationError(VerificationErrorKind.StateValidationFailed, "Session data validation failed."))
+          .Ensure(s => s.CorrectToken == job.CallbackData,
+              new VerificationError(VerificationErrorKind.IncorrectOptionOrExpiredToken, "Incorrect option selected."))
           .Match(
             onSuccess: _ => {
               logger.LogInformation("Verification approved for user {UserId} in chat {ChatId}. Creating success plan.", job.User.Id, session.TargetChatId);

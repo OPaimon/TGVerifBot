@@ -239,14 +239,8 @@ public class TelegramService(
   /// Approves or denies a user's request to join a chat.
   /// </summary>
   public async Task HandleChatJoinRequestAsync(ChatJoinRequestJob job) {
-
-    var user = _bot.User(job.User);
-    if (user == null) {
-      logger.LogError("Failed to retrieve user {UserId} for chat join request in chat {ChatId}", job.User, job.Chat);
-      return;
-    }
-    var result = await _bot.HideChatJoinRequest(job.Chat, job.User, job.Approve);
-    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, job.Chat, job.Approve);
+    var result = await _bot!.HideChatJoinRequest(job.Chat, job.User, job.Approve);
+    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", job.User, job.Chat, job.Approve);
   }
 
   /// <summary>
