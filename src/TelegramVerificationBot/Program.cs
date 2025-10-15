@@ -96,6 +96,13 @@ try {
       ,
     [typeof(QuizCallbackQueryJob)] = (sp, job) =>
         sp.GetRequiredService<TelegramService>().QuizCallbackQueryAsync((QuizCallbackQueryJob)job)
+      ,
+    [typeof(KickUserJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().KickUserAsync((KickUserJob)job)
+      ,
+    [typeof(SendMessageVerfJob)] = (sp, job) =>
+        sp.GetRequiredService<TelegramService>().SendMessageAsync((SendMessageVerfJob)job)
+      ,
   };
 
   builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
@@ -118,6 +125,7 @@ try {
   builder.Services.AddSingleton<IRateLimiter, RedisTokenBucketRateLimiter>();
   builder.Services.AddSingleton<AppJsonSerializerContext>();
   builder.Services.AddHostedService<RedisKeyeventListener>();
+  builder.Services.AddHostedService<CleanupWorkerService>();
   builder.Services.AddHostedService<Worker>();
 
   var host = builder.Build();

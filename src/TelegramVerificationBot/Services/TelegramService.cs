@@ -87,7 +87,9 @@ public class TelegramService(
           }
         }
       }: {
-          var inviterStatus = (await _bot!.GetChatMember(chatId, fromId)).Status;
+          var inviterStatus = fromId != userId
+            ? (await _bot!.GetChatMember(chatId, fromId)).Status
+            : ChatMemberStatus.Member;
           switch (inviterStatus) {
             case ChatMemberStatus.Administrator:
             case ChatMemberStatus.Creator:
@@ -209,7 +211,20 @@ public class TelegramService(
       parseMode: ParseMode.Html,
       protectContent: true,
       replyMarkup: inlineKeyboard);
-    await dispatcher.DispatchAsync(new SendQuizCallbackJob(userId, chatId, result!.Id, userChatId));
+    await dispatcher.DispatchAsync(new SendQuizCallbackJob(userId, chatId, result!.Id, userChatId, job.SessionId));
+  }
+
+  public async Task SendMessageAsync(SendMessageVerfJob job) {
+
+    var result = await _bot!.SendMessage(
+      job.ChatId, job.Text,
+      parseMode: ParseMode.Html,
+      protectContent: true);
+    logger.LogInformation("Sent message to chat {ChatId}: {Text}", job.ChatId, job.Text);
+    // delete after 10 seconds
+    await Task.Delay(10000);
+    await _bot.DeleteMessages(job.ChatId, [result!.Id]);
+    logger.LogInformation("Deleted message {MessageId} in chat {ChatId}", result.Id, job.ChatId);
   }
 
   /// <summary>
@@ -224,15 +239,14 @@ public class TelegramService(
   /// Approves or denies a user's request to join a chat.
   /// </summary>
   public async Task HandleChatJoinRequestAsync(ChatJoinRequestJob job) {
-    var chat = await _bot!.GetChat(job.Chat);
-    // var user = job.User;
+
     var user = _bot.User(job.User);
     if (user == null) {
       logger.LogError("Failed to retrieve user {UserId} for chat join request in chat {ChatId}", job.User, job.Chat);
       return;
     }
-    var result = await _bot.Client.Messages_HideChatJoinRequest(chat, user.TLUser(), job.Approve);
-    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, chat.Id, job.Approve);
+    var result = await _bot.HideChatJoinRequest(job.Chat, job.User, job.Approve);
+    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", user.Id, job.Chat, job.Approve);
   }
 
   /// <summary>
@@ -251,6 +265,16 @@ public class TelegramService(
     logger.LogInformation("Deleted message {MessageId} in chat {ChatId}", job.MessageId, job.ChatId);
   }
 
+  ///<summary>
+  /// Ban and then uban an user from a chat to kick them out.
+  /// </summary>
+  public async Task KickUserAsync(KickUserJob job) {
+    var (chatId, userId) = (job.ChatId, job.UserId);
+    await dispatcher.DispatchAsync(new BanUserJob(chatId, userId));
+    // await Task.Delay(1000); // Wait a second to ensure the ban is processed
+    // await dispatcher.DispatchAsync(new UnBanUserJob(chatId, userId, OnlyIfBanned: false));
+    logger.LogInformation("Kicked user {UserId} from chat {ChatId}", userId, chatId);
+  }
 
   /// <summary>
   /// Ban an user from a chat.
@@ -258,7 +282,8 @@ public class TelegramService(
   public async Task HnadleBanUserAsync(BanUserJob job) {
     await _bot!.BanChatMember(
       job.ChatId,
-      job.UserId
+      job.UserId,
+      untilDate: DateTime.UtcNow.AddSeconds(60)
     );
     logger.LogInformation("Banned user {UserId} from chat {ChatId}", job.UserId, job.ChatId);
   }
@@ -267,11 +292,9 @@ public class TelegramService(
   /// Unban an user from a chat.
   /// </summary>
   public async Task HnadleUnBanUserAsync(UnBanUserJob job) {
-    await _bot!.UnbanChatMember(
-      job.ChatId,
-      job.UserId,
-      job.OnlyIfBanned
-    );
+    var channel = await _bot!.InputChannel(job.ChatId);
+    var user = _bot!.InputPeerUser(job.UserId);
+    await _bot!.Client.Channels_EditBanned(channel, user, new ChatBannedRights { until_date = DateTime.UtcNow });
     logger.LogInformation("Unbanned user {UserId} from chat {ChatId}", job.UserId, job.ChatId);
   }
 
@@ -308,7 +331,7 @@ public class TelegramService(
   private static InlineKeyboardButton CreateQuizButton(string optionText, long chatId, string token) {
     return new InlineKeyboardButton(optionText) {
       // The callback data is structured as <chatId>_<token>
-      CallbackData = $"{chatId}_{token}"
+      CallbackData = token
     };
   }
 

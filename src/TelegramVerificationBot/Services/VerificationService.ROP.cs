@@ -10,7 +10,7 @@ namespace TelegramVerificationBot.Services;
 
 public enum VerificationErrorKind {
   // Start
-  UserPendingOrOnCooldown,
+  UserPending,
   NoQuizzesAvailable,
   StateStorageFailed,
   OnWhiteList,
@@ -44,7 +44,6 @@ public class VerificationServiceROP(
     IQuizService quizService,
     AppJsonSerializerContext jsonContext) {
   // --- Internal records for data transfer ---
-  internal record CallbackInfo(long ChatId, string Token);
   internal record VerificationQuizData(List<OptionWithToken> OptionsWithTokens, string CorrectToken, string Question);
 
   public int VerificationTimeoutMinutes { get; set; } = 3;
@@ -64,25 +63,30 @@ public class VerificationServiceROP(
         UntilDate: null
       )))
       .Bind(j => Task.FromResult(PrepareQuiz().Map(quizData => (Job: j, Quiz: quizData))))
-      .Bind(data => StoreStateAsync(data.Job.UserId, data.Job.ChatId, data.Quiz.CorrectToken, data));
+      // .Bind(data => StoreStateAsync(data.Job.UserId, data.Job.ChatId, data.Quiz.CorrectToken, data));
+      .Bind(data => StoreStateAsync(data.Job, data.Quiz, data));
 
     await result.Match(
-        onSuccess: data => DispatchSendQuizJob(data.Job, data.Quiz),
+        // onSuccess: data => DispatchSendQuizJob(data.Job, data.Quiz),
+        onSuccess: storedInfo => {
+          var originalData = storedInfo.PassThroughValue;
+          return DispatchSendQuizJob(originalData.Job, originalData.Quiz, storedInfo.SessionId); // 保持不变
+        },
         onFailure: error => HandleStartVerificationFailure(job, error)
     );
   }
 
   internal async Task<Result<StartVerificationJob, VerificationError>> CheckUserStatusAsync(StartVerificationJob job) {
-    var userStatusKey = $"user_status:{job.UserId}:{job.ChatId}";
-    var status = await redisDb.StringGetAsync(userStatusKey);
+    var cooldownKey = $"verify:cooldown:{job.ChatId}:{job.UserId}";
+    if (await redisDb.KeyExistsAsync(cooldownKey)) {
+      var errorMessage = $"User {job.UserId} is on cooldown in chat {job.ChatId}.";
+      return Result.Failure<StartVerificationJob, VerificationError>(new VerificationError(VerificationErrorKind.UserOnCooldown, errorMessage));
+    }
 
-    if (status.HasValue) {
-      var errorMessage = $"User {job.UserId} has an existing status (pending or cooldown) in chat {job.ChatId}.";
-      if (status.ToString().Equals("WhiteList", StringComparison.OrdinalIgnoreCase)) {
-        errorMessage = $"User {job.UserId} is on the whitelist in chat {job.ChatId}.";
-        return Result.Failure<StartVerificationJob, VerificationError>(new VerificationError(VerificationErrorKind.OnWhiteList, errorMessage));
-      }
-      return Result.Failure<StartVerificationJob, VerificationError>(new VerificationError(VerificationErrorKind.UserPendingOrOnCooldown, errorMessage));
+    var lookupKey = $"verify:lookup:{job.ChatId}:{job.UserId}";
+    if (await redisDb.KeyExistsAsync(lookupKey)) {
+      var errorMessage = $"User {job.UserId} already has a pending verification in chat {job.ChatId}.";
+      return Result.Failure<StartVerificationJob, VerificationError>(new VerificationError(VerificationErrorKind.UserPending, errorMessage));
     }
 
     return Result.Success<StartVerificationJob, VerificationError>(job);
@@ -101,31 +105,58 @@ public class VerificationServiceROP(
             return new VerificationQuizData(shuffledOptions, correctToken, quiz.Question);
           });
 
+  internal record StoredStateInfo<T>(string SessionId, string CallbackToken, T PassThroughValue);
 
-  internal async Task<Result<T, VerificationError>> StoreStateAsync<T>(long userId, long chatId, string correctToken, T passThroughValue) {
+  internal async Task<Result<StoredStateInfo<T>, VerificationError>> StoreStateAsync<T>(
+    StartVerificationJob job,
+    VerificationQuizData quiz,
+    T passThroughValue
+  ) {
     try {
-      var userStatusKey = $"user_status:{userId}:{chatId}";
-      var userStatusKeyE = $"user_statusE:{userId}:{chatId}";
-      var userStatusKeyD = $"user_statusD:{userId}:{chatId}";
-      var verificationTokenKey = $"verification_token:{correctToken}";
-
-      var stateObj = new VerificationState(UserId: userId, ChatId: chatId);
-      var stateJson = JsonSerializer.Serialize(stateObj, jsonContext.VerificationState);
-
-      await Task.WhenAll(
-          redisDb.StringSetAsync(userStatusKey, correctToken, TimeSpan.FromMinutes(VerificationTimeoutMinutes + CooldownMinutes)),
-          redisDb.StringSetAsync(verificationTokenKey, stateJson, TimeSpan.FromMinutes(VerificationTimeoutMinutes)),
-          redisDb.StringSetAsync(userStatusKeyE, "E", TimeSpan.FromMinutes(VerificationTimeoutMinutes)),
-          redisDb.StringSetAsync(userStatusKeyD, "D", TimeSpan.FromMinutes(VerificationTimeoutMinutes) + TimeSpan.FromSeconds(MessageDeletionDelaySeconds + 20))
+      var sessionId = Guid.NewGuid().ToString();
+      var correctToken = quiz.CorrectToken;
+      var contextType = job.UserChatId == job.ChatId
+        ? VerificationContextType.InGroupRestriction
+        : VerificationContextType.JoinRequest;
+      var session = new VerificationSession(
+          SessionId: sessionId,
+          UserId: job.UserId,
+          TargetChatId: job.ChatId,
+          ContextType: contextType,
+          CorrectToken: correctToken, // 正确答案的 Token
+          OptionsWithTokens: quiz.OptionsWithTokens // 存储所有选项和它们的 Token
       );
-      return Result.Success<T, VerificationError>(passThroughValue);
+      var sessionJson = JsonSerializer.Serialize(session, jsonContext.VerificationSession);
+      var sessionKey = $"verify:session:{sessionId}";
+      var tokenMapKey = $"verify:token_map:{correctToken}";
+      var lookupKey = $"verify:lookup:{job.ChatId}:{job.UserId}";
+      var timeoutKey = $"verify:timeout:{job.ChatId}:{job.UserId}";
+
+      var tran = redisDb.CreateTransaction();
+
+      var triggerExpiry = TimeSpan.FromMinutes(VerificationTimeoutMinutes);
+      var dataExpiry = triggerExpiry + TimeSpan.FromSeconds(MessageDeletionDelaySeconds);
+
+      _ = tran.StringSetAsync(sessionKey, sessionJson, dataExpiry);
+      _ = tran.StringSetAsync(tokenMapKey, sessionId, dataExpiry);
+      _ = tran.StringSetAsync(lookupKey, sessionId, dataExpiry);
+      _ = tran.StringSetAsync(timeoutKey, sessionId, triggerExpiry);
+
+      if (await tran.ExecuteAsync()) {
+        var storedInfo = new StoredStateInfo<T>(sessionId, correctToken, passThroughValue);
+        return Result.Success<StoredStateInfo<T>, VerificationError>(storedInfo);
+      }
+      return Result.Failure<StoredStateInfo<T>, VerificationError>(new VerificationError(
+          VerificationErrorKind.StateStorageFailed, "Failed to execute Redis transaction."));
+
+
     } catch (Exception ex) {
       var errorMessage = $"Failed to store verification state in Redis: {ex.Message}";
-      return Result.Failure<T, VerificationError>(new VerificationError(VerificationErrorKind.StateStorageFailed, errorMessage));
+      return Result.Failure<StoredStateInfo<T>, VerificationError>(new VerificationError(VerificationErrorKind.StateStorageFailed, errorMessage));
     }
   }
 
-  internal Task DispatchSendQuizJob(StartVerificationJob originalJob, VerificationQuizData quizData) {
+  internal Task DispatchSendQuizJob(StartVerificationJob originalJob, VerificationQuizData quizData, string sessionId) {
     logger.LogInformation("Dispatching SendQuizJob for user {UserId}", originalJob.UserId);
     return dispatcher.DispatchAsync(new SendQuizJob(
         originalJob.ChatId,
@@ -134,7 +165,8 @@ public class VerificationServiceROP(
         originalJob.UserId,
         originalJob.UserFirstName,
         originalJob.UserChatId,
-        quizData.OptionsWithTokens
+        quizData.OptionsWithTokens,
+        sessionId
     // originalJob.InviteLink
     ));
   }
@@ -142,39 +174,76 @@ public class VerificationServiceROP(
   internal Task HandleStartVerificationFailure(StartVerificationJob job, VerificationError error) {
     logger.LogWarning("Failed to start verification for user {UserId}: {Error}", job.UserId, error);
 
-    var shouldUnbanLater = job.UserChatId == job.ChatId;
+    var contextType = job.UserChatId == job.ChatId
+      ? VerificationContextType.InGroupRestriction
+      : VerificationContextType.JoinRequest;
+
     string messageText = "";
 
     switch (error.Kind) {
-      case VerificationErrorKind.UserPendingOrOnCooldown:
-        messageText = "❌ 你已经在等待验证或处于冷却时间内，请稍后再试。";
+      case VerificationErrorKind.UserPending: // 假设我们有一个更精确的错误类型
+        messageText = "❌ 您有一个正在进行的验证，请先完成它。";
+        dispatcher.DispatchAsync(new SendMessageVerfJob(job.ChatId, messageText));
+        return Task.CompletedTask;
+      case VerificationErrorKind.UserOnCooldown:
+        messageText = "❌ 您处于冷却时间内，请稍后再试。";
         break;
       case VerificationErrorKind.NoQuizzesAvailable:
       case VerificationErrorKind.StateStorageFailed:
-        messageText = "❌ 验证服务当前不可用，请稍后再试。";
+        messageText = "❌ 验证服务当前不可用，我们无法处理您的请求。";
         break;
+
       default:
-        logger.LogError("Unhandled verification error for user {UserId}: {Error}", job.UserId, error);
+        logger.LogError("为用户 {UserId} 启动验证时遇到未处理的错误: {Error}", job.UserId, error);
         return Task.CompletedTask;
     }
 
-    dispatcher.DispatchAsync(new SendQuizJob(
-        job.ChatId, job.ChatTitle, messageText, job.UserId,
-        job.UserFirstName, job.UserChatId, new List<OptionWithToken>()
-    ));
+    dispatcher.DispatchAsync(new SendMessageVerfJob(job.ChatId, messageText));
 
-    if (shouldUnbanLater) {
-      Task.Delay(TimeSpan.FromSeconds(5))
-          .ContinueWith(_ => dispatcher.DispatchAsync(new UnBanUserJob(job.ChatId, job.UserId, true)));
+    switch (contextType) {
+      case VerificationContextType.InGroupRestriction:
+        Task.Delay(TimeSpan.FromSeconds(5))
+            .ContinueWith(_ => dispatcher.DispatchAsync(new KickUserJob(job.ChatId, job.UserId)));
+        break;
+
+      case VerificationContextType.JoinRequest:
+        dispatcher.DispatchAsync(new ChatJoinRequestJob(job.UserId, job.ChatId, false));
+        break;
     }
 
     return Task.CompletedTask;
   }
 
   public async Task HandleSendQuizCallback(SendQuizCallbackJob job) {
-    var userStatusKeyBackup = $"b_user_status:{job.UserId}:{job.ChatId}";
-    var json = new BVerificationState(job.MessageId, job.MessageChatId, job.MessageChatId == job.ChatId);
-    await redisDb.StringSetAsync(userStatusKeyBackup, JsonSerializer.Serialize(json, jsonContext.BVerificationState), TimeSpan.FromMinutes(VerificationTimeoutMinutes) + TimeSpan.FromSeconds(MessageDeletionDelaySeconds + 20));
+    if (string.IsNullOrEmpty(job.SessionId)) {
+      logger.LogError("Cannot update MessageId, SessionId is missing in SendQuizCallbackJob.");
+      return;
+    }
+
+    var sessionKey = $"verify:session:{job.SessionId}";
+    var sessionJson = await redisDb.StringGetAsync(sessionKey);
+    if (sessionJson.IsNullOrEmpty) {
+      logger.LogWarning("Could not find session {SessionId} to update MessageId.", job.SessionId);
+      return;
+    }
+    try {
+      var session = JsonSerializer.Deserialize(sessionJson.ToString(), jsonContext.VerificationSession);
+      if (session is null) {
+        return;
+      }
+
+      var updatedSession = session with { VerificationMessageId = job.MessageId };
+      var updatedSessionJson = JsonSerializer.Serialize(updatedSession, jsonContext.VerificationSession);
+
+      var ttl = await redisDb.KeyTimeToLiveAsync(sessionKey);
+
+      await redisDb.StringSetAsync(sessionKey, updatedSessionJson, ttl);
+
+      logger.LogInformation("Successfully updated MessageId for session {SessionId}.", job.SessionId);
+
+    } catch (Exception ex) {
+      logger.LogError(ex, "Failed to update MessageId for session {SessionId}.", job.SessionId);
+    }
   }
 
   #endregion
@@ -182,28 +251,37 @@ public class VerificationServiceROP(
   #region Handle Callback
 
   public async Task HandleCallbackAsync(ProcessQuizCallbackJob job) {
+    var findSessionResult = await FindSessionByTokenAsync(job.CallbackData);
+    var actionsPlan = findSessionResult.Match(
+      onSuccess: session => {
+        return Result.Success<VerificationSession, VerificationError>(session)
+          .Ensure(s => s.UserId == job.User.Id,
+              new VerificationError(VerificationErrorKind.UserNotMatch, "该验证不适用于你。"))
+          .Match(
+            onSuccess: _ => {
+              logger.LogInformation("Verification approved for user {UserId} in chat {ChatId}. Creating success plan.", job.User.Id, session.TargetChatId);
+              return CreateSuccessPlan(job.User, job.Message, session);
+            },
+            onFailure: error => {
+              logger.LogWarning("Verification failed for user {UserId} in chat {ChatId}: {Error}. Creating failure plan.", job.User.Id, session.TargetChatId, error.Message);
+              return CreateFailurePlan(error, job, session);
+            }
+          );
+      },
+      onFailure: error => {
 
-    var result = await Task.FromResult(ParseCallbackData(job.CallbackData))
-        .Bind(callbackInfo => CheckPreVerificationStatus(job.User, callbackInfo.ChatId, callbackInfo))
-        .Bind(callbackInfo => VerifyAnswerAndCleanup(job.User, callbackInfo.ChatId, callbackInfo.Token));
-
-    var chatId = GetChatIdFromCallback(job.CallbackData);
-    if (chatId == 0 && result.IsFailure) {
-      logger.LogError("Could not process callback due to invalid ChatId in callback data: {CallbackData}", job.CallbackData);
-      return;
-    }
-
-    var isInChat = job.Message.Chat.Id == GetChatIdFromCallback(job.CallbackData);
-
-    var actionsPlan = result.Match(
-        onSuccess: _ => {
-          logger.LogInformation("Verification approved for user {UserId} in chat {ChatId}. Creating success plan.", job.User.Id, chatId);
-          return CreateSuccessPlan(job.User, job.Message, chatId, isInChat);
-        },
-        onFailure: error => {
-          logger.LogWarning("Verification failed for user {UserId} in chat {ChatId}: {Error}. Creating failure plan.", job.User.Id, chatId, error.Message);
-          return CreateFailurePlan(error, job, chatId, isInChat);
-        }
+        logger.LogWarning("Verification failed for user {UserId}: {Error}. Creating failure plan without session.", job.User.Id, error.Message);
+        return CreateFailurePlan(error, job, new VerificationSession(
+          SessionId: "unknown",
+          UserId: job.User.Id,
+          TargetChatId: job.Message.Chat.Id,
+          ContextType: job.User.Id == job.Message.Chat.Id
+            ? VerificationContextType.JoinRequest
+            : VerificationContextType.InGroupRestriction,
+          CorrectToken: "",
+          OptionsWithTokens: []
+        ));
+      }
     );
 
     foreach (var action in actionsPlan) {
@@ -211,27 +289,68 @@ public class VerificationServiceROP(
     }
   }
 
-  internal IEnumerable<Func<Task>> CreateSuccessPlan(User user, Message message, long chatId, bool isInChat) {
+  internal async Task<Result<VerificationSession, VerificationError>> FindSessionByTokenAsync(string callbackToken) {
+    var tokenMapKey = $"verify:token_map:{callbackToken}";
+
+    var sessionId = await redisDb.StringGetDeleteAsync(tokenMapKey);
+
+    if (sessionId.IsNullOrEmpty) {
+      return Result.Failure<VerificationSession, VerificationError>(new VerificationError(
+          VerificationErrorKind.IncorrectOptionOrExpiredToken, "Invalid, expired, or already used token."));
+    }
+
+    var sessionKey = $"verify:session:{sessionId}";
+    var sessionJson = await redisDb.StringGetAsync(sessionKey);
+
+    if (sessionJson.IsNullOrEmpty) {
+      return Result.Failure<VerificationSession, VerificationError>(new VerificationError(
+          VerificationErrorKind.StateDeserializationFailed, "Session data not found for a valid token."));
+    }
+
+    try {
+      var session = JsonSerializer.Deserialize(sessionJson.ToString(), jsonContext.VerificationSession);
+      return session != null
+          ? Result.Success<VerificationSession, VerificationError>(session)
+          : Result.Failure<VerificationSession, VerificationError>(new VerificationError(
+              VerificationErrorKind.StateDeserializationFailed, "Deserialized session is null."));
+    } catch (JsonException ex) {
+      return Result.Failure<VerificationSession, VerificationError>(new VerificationError(
+          VerificationErrorKind.StateDeserializationFailed, $"Failed to deserialize session: {ex.Message}"));
+    }
+  }
+
+  internal IEnumerable<Func<Task>> CreateSuccessPlan(User user, Message message, VerificationSession session) {
     const string resultText = "✅ 验证通过！欢迎加入！";
-
-
     yield return () => dispatcher.DispatchAsync(new EditMessageJob(message.Chat.Id, message.Id, resultText));
 
-    if (isInChat) {
-      yield return () => dispatcher.DispatchAsync(new RestrictUserJob(
-            ChatId: chatId,
+    switch (session.ContextType) {
+      case VerificationContextType.InGroupRestriction:
+        yield return () => dispatcher.DispatchAsync(new RestrictUserJob(
+            ChatId: session.TargetChatId,
             UserId: user.Id,
             Permissions: TelegramService.FullRestrictPermissions(),
             UntilDate: DateTime.UtcNow + TimeSpan.FromMinutes(1)
           ));
-    } else {
-      yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, true));
-    }
+        break;
 
-    yield return () => redisDb.KeyDeleteAsync($"user_statusE:{user.Id}:{chatId}");
+      case VerificationContextType.JoinRequest:
+        yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, session.TargetChatId, true));
+        break;
+    }
+    var sessionKey = $"verify:session:{session.SessionId}";
+    var lookupKey = $"verify:lookup:{session.TargetChatId}:{user.Id}";
+    var timeoutKey = $"verify:timeout:{session.TargetChatId}:{user.Id}";
+    yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+
+    yield return () => {
+      var cleanupTask = new CleanupTask(message.Id, message.Chat.Id);
+      var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
+      var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
+      return redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+    };
   }
 
-  internal IEnumerable<Func<Task>> CreateFailurePlan(VerificationError error, ProcessQuizCallbackJob job, long chatId, bool isInChat) {
+  internal IEnumerable<Func<Task>> CreateFailurePlan(VerificationError error, ProcessQuizCallbackJob job, VerificationSession session) {
     switch (error.Kind) {
       case VerificationErrorKind.UserOnCooldown:
         yield return () => dispatcher.DispatchAsync(new EditMessageJob(job.Message.Chat.Id, job.Message.Id, "❌ 你在冷却时间内，请稍后再试。"));
@@ -243,117 +362,50 @@ public class VerificationServiceROP(
 
       case VerificationErrorKind.IncorrectOptionOrExpiredToken:
         // This plan has two parts: setting a cooldown, then running the generic failure actions.
-        var userStatusKey = $"user_status:{job.User.Id}:{chatId}";
-        yield return () => redisDb.StringSetAsync(userStatusKey, "Cooldown", TimeSpan.FromMinutes(1));
+        var cooldownKey = $"verify:cooldown:{session.TargetChatId}:{job.User.Id}";
+        yield return () => redisDb.StringSetAsync(cooldownKey, "1", TimeSpan.FromMinutes(CooldownMinutes));
+
+        var sessionKey = $"verify:session:{session.SessionId}";
+        var lookupKey = $"verify:lookup:{session.TargetChatId}:{job.User.Id}";
+        var timeoutKey = $"verify:timeout:{session.TargetChatId}:{job.User.Id}";
+        yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+
 
         // Chain to the generic failure plan.
-        foreach (var action in CreateGenericFailurePlan(job.User, job.Message, chatId, isInChat)) {
+        foreach (var action in CreateGenericFailurePlan(job.User, job.Message, session)) {
           yield return action;
         }
+
+        yield return () => {
+          var cleanupTask = new CleanupTask(job.Message.Id, job.Message.Chat.Id);
+          var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
+          var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
+
+          return redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+        };
         break;
 
       default: // StateDeserializationFailed, StateValidationFailed, etc.
-        foreach (var action in CreateGenericFailurePlan(job.User, job.Message, chatId, isInChat)) {
+        foreach (var action in CreateGenericFailurePlan(job.User, job.Message, session)) {
           yield return action;
         }
         break;
     }
   }
 
-  internal IEnumerable<Func<Task>> CreateGenericFailurePlan(User user, Message message, long chatId, bool isInChat) {
+  internal IEnumerable<Func<Task>> CreateGenericFailurePlan(User user, Message message, VerificationSession session) {
     const string resultText = "❌ 验证失败，入群请求已被拒绝。";
 
     yield return () => dispatcher.DispatchAsync(new EditMessageJob(message.Chat.Id, message.Id, resultText));
 
-    if (isInChat) {
-      yield return () => dispatcher.DispatchAsync(new UnBanUserJob(chatId, user.Id, false));
-    } else {
-      yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, chatId, false));
+    switch (session.ContextType) {
+      case VerificationContextType.InGroupRestriction:
+        yield return () => dispatcher.DispatchAsync(new KickUserJob(session.TargetChatId, user.Id));
+        break;
+      case VerificationContextType.JoinRequest:
+        yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, session.TargetChatId, false));
+        break;
     }
-
-    yield return () => redisDb.KeyDeleteAsync($"user_statusE:{user.Id}:{chatId}");
-  }
-
-  internal Result<CallbackInfo, VerificationError> ParseCallbackData(string callbackData) {
-    ArgumentNullException.ThrowIfNull(callbackData);
-    var parts = callbackData.Split('_');
-    if (parts.Length != 2 || !long.TryParse(parts[0], out var chatId)) {
-      var errorMessage = $"Invalid callback data format: {callbackData}";
-      return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.InvalidCallbackData, errorMessage));
-    }
-    return Result.Success<CallbackInfo, VerificationError>(new CallbackInfo(chatId, parts[1]));
-  }
-
-  internal async Task<Result<CallbackInfo, VerificationError>> CheckPreVerificationStatus(User user, long chatId, CallbackInfo passThroughInfo) {
-    var userStatusKey = $"user_status:{user.Id}:{chatId}";
-    var status = await redisDb.StringGetAsync(userStatusKey);
-
-    if (status.HasValue && status.ToString().Equals("Cooldown", StringComparison.OrdinalIgnoreCase)) {
-      var errorMessage = $"User {user.Id} is in cooldown.";
-      return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.UserOnCooldown, errorMessage));
-    }
-
-    if (!status.HasValue) {
-      var errorMessage = $"No active verification for user {user.Id}.";
-      return Result.Failure<CallbackInfo, VerificationError>(new VerificationError(VerificationErrorKind.UserNotMatch, errorMessage));
-    }
-
-    return Result.Success<CallbackInfo, VerificationError>(passThroughInfo);
-  }
-
-  internal async Task<Result<bool, VerificationError>> VerifyAnswerAndCleanup(User user, long chatId, string clickedToken) {
-    var verificationTokenKey = $"verification_token:{clickedToken}";
-    var stateJson = await redisDb.StringGetDeleteAsync(verificationTokenKey);
-
-    if (stateJson.IsNullOrEmpty) {
-      return Result.Failure<bool, VerificationError>(new VerificationError(VerificationErrorKind.IncorrectOptionOrExpiredToken, "Incorrect option or expired token."));
-    }
-
-    var validationResult = DeserializeState(stateJson.ToString())
-        .Bind(state => ValidateState(state, user, chatId));
-
-    var tappedResult = await validationResult.Tap(() => ClearUserStatusLockAsync(user, chatId));
-
-    return tappedResult.Map(_ => true);
-  }
-
-  internal Result<VerificationState, VerificationError> DeserializeState(string stateJson) {
-    try {
-      var state = JsonSerializer.Deserialize(stateJson, jsonContext.VerificationState);
-      if (state != null) {
-        return Result.Success<VerificationState, VerificationError>(state);
-      }
-
-      var errorMessage = "Deserialized state is null.";
-      return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateDeserializationFailed, errorMessage));
-    } catch (JsonException ex) {
-      var errorMessage = $"Failed to deserialize state: {ex.Message}";
-      return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateDeserializationFailed, errorMessage));
-    }
-  }
-
-  internal Result<VerificationState, VerificationError> ValidateState(VerificationState state, User user, long chatId) {
-    if (state.UserId == user.Id && state.ChatId == chatId) {
-      return Result.Success<VerificationState, VerificationError>(state);
-    }
-
-    var errorMessage = $"State mismatch. Expected User/Chat: {user.Id}/{chatId}, but got {state.UserId}/{state.ChatId}";
-    return Result.Failure<VerificationState, VerificationError>(new VerificationError(VerificationErrorKind.StateValidationFailed, errorMessage));
-  }
-
-  internal Task ClearUserStatusLockAsync(User user, long chatId) {
-    var userStatusKey = $"user_status:{user.Id}:{chatId}";
-    // var userStatusKeyE = $"user_statusE:{user.Id}:{chatId}";
-    // return redisDb.KeyDeleteAsync(userStatusKey);
-    return redisDb.StringSetAsync(userStatusKey, "WhiteList", TimeSpan.FromMinutes(1));
-  }
-
-  internal long GetChatIdFromCallback(string callbackData) {
-    // Helper to extract ChatId for logging even on failure
-    return ParseCallbackData(callbackData).Match(
-        onSuccess: info => info.ChatId,
-        onFailure: _ => 0
-    );
   }
 
   #endregion
