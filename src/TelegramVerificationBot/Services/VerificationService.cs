@@ -24,21 +24,16 @@ public enum VerificationErrorKind {
   StateValidationFailed
 }
 
-public readonly struct VerificationError {
-  public VerificationErrorKind Kind { get; }
-  public string Message { get; }
-
-  public VerificationError(VerificationErrorKind kind, string message) {
-    Kind = kind;
-    Message = message;
-  }
+public readonly struct VerificationError(VerificationErrorKind kind, string message) {
+  public VerificationErrorKind Kind { get; } = kind;
+  public string Message { get; } = message;
 
   public override string ToString() => Message;
 }
 
 
-public class VerificationServiceROP(
-    ILogger<VerificationServiceROP> logger,
+public class VerificationService(
+    ILogger<VerificationService> logger,
     ITaskDispatcher dispatcher,
     IDatabase redisDb,
     IQuizService quizService,
@@ -100,7 +95,7 @@ public class VerificationServiceROP(
             var correctToken = optionsWithTokens[quiz.CorrectOptionIndex].Token;
 
             var random = new Random();
-            var shuffledOptions = optionsWithTokens.OrderBy(option => random.Next()).ToList();
+            var shuffledOptions = optionsWithTokens.OrderBy(_ => random.Next()).ToList();
 
             return new VerificationQuizData(shuffledOptions, correctToken, quiz.Question);
           });
@@ -185,7 +180,7 @@ public class VerificationServiceROP(
       ? VerificationContextType.InGroupRestriction
       : VerificationContextType.JoinRequest;
 
-    string messageText = "";
+    string messageText;
 
     switch (error.Kind) {
       case VerificationErrorKind.UserPending: // 假设我们有一个更精确的错误类型

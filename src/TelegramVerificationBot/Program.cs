@@ -7,7 +7,6 @@ using TelegramVerificationBot.Configuration;
 using TelegramVerificationBot.Dispatcher;
 using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Services;
-using TelegramVerificationBot.Tasks;
 using WTelegram;
 
 
@@ -16,7 +15,7 @@ using WTelegram;
 try {
   Log.Information("Starting application host");
 
-  var builder = Host.CreateApplicationBuilder(args);
+  HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
   string logsPath = builder.Configuration.GetSection("PathSettings")?.GetValue<string>("LogPath") ?? "logs";
 
   // Configure Serilog logger programmatically
@@ -45,6 +44,14 @@ try {
     wtelegramLogger.Write(logLevel, message);
   };
 
+  //     0 => LogLevel.Trace,
+  //     1 => LogLevel.Debug,
+  //     2 => LogLevel.Information,
+  //     3 => LogLevel.Warning,
+  //     4 => LogLevel.Error,
+  //     5 => LogLevel.Critical,
+  //     _ => LogLevel.None
+
   // Replace default logging with Serilog
   builder.Logging.ClearProviders();
   builder.Logging.AddSerilog();
@@ -56,63 +63,27 @@ try {
   builder.Services.AddOptions<RateLimitingSettings>()
       .BindConfiguration("RateLimiting");
 
+  builder.Services.AddOptions<TplDataflowOptions>()
+    .BindConfiguration("TaskDispatcher:TplDataflow");
+
+  builder.Services.AddOptions<TaskDispatcherSettings>()
+    .BindConfiguration("TaskDispatcher");
+
   builder.Services.AddSingleton<TelegramService>();
-  builder.Services.AddSingleton<VerificationServiceROP>();
+  builder.Services.AddSingleton<VerificationService>();
   builder.Services.AddQuizService();
   builder.Services.AddSingleton<ExpiredStateService>();
 
-  var handlers = new Dictionary<Type, Func<IServiceProvider, object, Task>> {
-    [typeof(RespondToPingJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().RespondToPingAsync((RespondToPingJob)job)
-      ,
-    [typeof(StartVerificationJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleStartVerificationAsync((StartVerificationJob)job)
-      ,
-    [typeof(SendQuizJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().SendQuizAsync((SendQuizJob)job)
-      ,
-    [typeof(ProcessQuizCallbackJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleCallbackAsync((ProcessQuizCallbackJob)job)
-      ,
-    [typeof(ChatJoinRequestJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HandleChatJoinRequestAsync((ChatJoinRequestJob)job)
-      ,
-    [typeof(EditMessageJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HandleEditMessageAsync((EditMessageJob)job)
-      ,
-    [typeof(RedisKeyEventJob)] = (sp, job) =>
-        sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync((RedisKeyEventJob)job)
-      ,
-    [typeof(SendQuizCallbackJob)] = (sp, job) =>
-        sp.GetRequiredService<VerificationServiceROP>().HandleSendQuizCallback((SendQuizCallbackJob)job)
-      ,
-    [typeof(BanUserJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HnadleBanUserAsync((BanUserJob)job)
-      ,
-    [typeof(UnBanUserJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HnadleUnBanUserAsync((UnBanUserJob)job)
-      ,
-    [typeof(RestrictUserJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HnadleRestrictUserAsync((RestrictUserJob)job)
-      ,
-    [typeof(DeleteMessageJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().HandleDeleteMessageAsync((DeleteMessageJob)job)
-      ,
-    [typeof(QuizCallbackQueryJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().QuizCallbackQueryAsync((QuizCallbackQueryJob)job)
-      ,
-    [typeof(KickUserJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().KickUserAsync((KickUserJob)job)
-      ,
-    [typeof(SendMessageVerfJob)] = (sp, job) =>
-        sp.GetRequiredService<TelegramService>().SendMessageAsync((SendMessageVerfJob)job)
-      ,
-  };
 
-  builder.Services.AddSingleton<IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>>>(handlers);
 
-  builder.Services.AddSingleton<ITaskDispatcher, FunctionalTaskDispatcher>();
-  builder.Services.AddHostedService(sp => (FunctionalTaskDispatcher)sp.GetRequiredService<ITaskDispatcher>());
+  builder.Services.AddSingleton<DataflowPipelineBuilder>();
+  builder.Services.AddSingleton<DataflowTaskDispatcher>();
+  builder.Services.AddSingleton<ITaskDispatcher>(sp =>
+    sp.GetRequiredService<DataflowTaskDispatcher>());
+  builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<DataflowTaskDispatcher>());
+  // builder.Services.AddSingleton<ITaskDispatcher, FunctionalTaskDispatcher>();
+  // builder.Services.AddHostedService(sp => (FunctionalTaskDispatcher)sp.GetRequiredService<ITaskDispatcher>());
 
   var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
 
@@ -120,7 +91,7 @@ try {
     throw new Exception("Redis connection string is not configured.");
   }
 
-  builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+  builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
       ConnectionMultiplexer.Connect(redisConnectionString)
   );
   builder.Services.AddSingleton(sp =>

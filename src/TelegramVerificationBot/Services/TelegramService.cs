@@ -10,7 +10,7 @@ using TelegramVerificationBot.Tasks;
 using TL;
 using WTelegram;
 
-namespace TelegramVerificationBot;
+namespace TelegramVerificationBot.Services;
 
 /// <summary>
 /// Manages all interactions with the Telegram API (both Bot API and Client API via WTelegram).
@@ -37,7 +37,6 @@ public class TelegramService(
     _dbConnection = new Microsoft.Data.Sqlite.SqliteConnection(sqliteConnectionString);
     _dbConnection.Open();
     _bot = new Bot(botToken: settings.Value.BotToken, apiId: int.Parse(settings.Value.ApiId), apiHash: settings.Value.ApiHash, dbConnection: _dbConnection);
-    _bot.Manager.Log = (level, message) => logger.LogDebug("WTelegram: {Message}", message);
     _bot.OnMessage += OnMessage;
     _bot.OnError += async (e, s) => {
       logger.LogError(e, "WTelegram error: {State}", s);
@@ -65,28 +64,14 @@ public class TelegramService(
 
       case {
         ChatMember: {
-          NewChatMember: {
-            User: {
-              IsBot: false,
-              Id: var userId,
-              FirstName: var firstName
-            },
-            Status: ChatMemberStatus.Member
-          },
-          OldChatMember: {
-            Status:
-            not ChatMemberStatus.Member and
-            not ChatMemberStatus.Administrator and
-            not ChatMemberStatus.Creator and
-            not ChatMemberStatus.Restricted
-          } or null,
-          From.Id: var fromId,
-          Chat: {
-            Id: var chatId,
-            Title: var chatTitle
-          }
+          NewChatMember.User: { IsBot: false, Id: var userId, FirstName: var firstName },
+          NewChatMember.Status: ChatMemberStatus.Member,
+          Chat: { Id: var chatId, Title: var chatTitle },
+          From: { Id: var fromId },
         }
-      }: {
+      }
+        when !ActiveStatuses.Contains(update.ChatMember.OldChatMember.Status)
+        : {
           var inviterStatus = fromId != userId
             ? (await _bot!.GetChatMember(chatId, fromId)).Status
             : ChatMemberStatus.Member;
@@ -239,8 +224,8 @@ public class TelegramService(
   /// Approves or denies a user's request to join a chat.
   /// </summary>
   public async Task HandleChatJoinRequestAsync(ChatJoinRequestJob job) {
-    var result = await _bot!.HideChatJoinRequest(job.Chat, job.User, job.Approve);
-    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", job.User, job.Chat, job.Approve);
+    var result = await _bot!.HideChatJoinRequest(job.ChatId, job.UserId, job.Approve);
+    logger.LogInformation("Handled chat join request for user {UserId} in chat {ChatId}, approved: {Approve}", job.UserId, job.ChatId, job.Approve);
   }
 
   /// <summary>
@@ -377,4 +362,11 @@ public class TelegramService(
       CanSendPolls = false,
       CanSendOtherMessages = false
     };
+  private static readonly ChatMemberStatus[] ActiveStatuses =
+  [
+    ChatMemberStatus.Member,
+    ChatMemberStatus.Administrator,
+    ChatMemberStatus.Creator,
+    ChatMemberStatus.Restricted
+  ];
 }

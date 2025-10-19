@@ -6,14 +6,13 @@ namespace TelegramVerificationBot.Dispatcher;
 // highlight-next-line
 public class FunctionalTaskDispatcher(
         ILogger<FunctionalTaskDispatcher> logger,
-        IReadOnlyDictionary<Type, Func<IServiceProvider, object, Task>> handlers,
         IServiceProvider serviceProvider,
 // highlight-next-line
         IRateLimiter rateLimiter) : BackgroundService, ITaskDispatcher {
   private readonly Channel<object> _queue = Channel.CreateUnbounded<object>();
 
   // This method now fulfills the ITaskDispatcher interface contract.
-  public async Task DispatchAsync(object job) {
+  public async Task DispatchAsync(IJob job) {
     await _queue.Writer.WriteAsync(job);
   }
 
@@ -39,8 +38,8 @@ public class FunctionalTaskDispatcher(
         // Execution logic
         logger.LogInformation("Processing job {JobType}...", job.GetType().Name);
         using (var scope = serviceProvider.CreateScope()) {
-          if (handlers.TryGetValue(job.GetType(), out var handler)) {
-            await handler(scope.ServiceProvider, job);
+          if (job is IJob processableJob) {
+            await processableJob.ProcessAsync(scope.ServiceProvider);
           } else {
             logger.LogError("No handler found for job type {JobType}", job.GetType().Name);
           }

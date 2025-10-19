@@ -1,3 +1,5 @@
+using TelegramVerificationBot.Tasks;
+
 namespace TelegramVerificationBot.Dispatcher;
 
 /// <summary>
@@ -9,5 +11,5 @@ public interface ITaskDispatcher {
   /// </summary>
   /// <param name="job">The job object to be processed.</param>
   /// <returns>A task that represents the asynchronous write operation.</returns>
-  Task DispatchAsync(object job);
+  Task DispatchAsync(IJob job);
 }

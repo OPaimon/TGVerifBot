@@ -14,25 +14,25 @@ using TelegramVerificationBot.Tasks;
 
 namespace TelegramVerificationBot.Tests;
 
-public class VerificationServiceROPTests {
+public class VerificationServiceTests {
   #region Setup
 
-  private readonly Mock<ILogger<VerificationServiceROP>> _loggerMock;
+  private readonly Mock<ILogger<VerificationService>> _loggerMock;
   private readonly Mock<ITaskDispatcher> _dispatcherMock;
   private readonly Mock<IDatabase> _redisDbMock;
   private readonly Mock<IQuizService> _quizServiceMock;
   private readonly AppJsonSerializerContext _jsonContext;
-  private readonly VerificationServiceROP _sut; // System Under Test
+  private readonly VerificationService _sut; // System Under Test
 
-  public VerificationServiceROPTests() {
-    _loggerMock = new Mock<ILogger<VerificationServiceROP>>();
+  public VerificationServiceTests() {
+    _loggerMock = new Mock<ILogger<VerificationService>>();
     _dispatcherMock = new Mock<ITaskDispatcher>();
     _redisDbMock = new Mock<IDatabase>();
     _quizServiceMock = new Mock<IQuizService>();
 
     _jsonContext = new AppJsonSerializerContext(new JsonSerializerOptions());
 
-    _sut = new VerificationServiceROP(
+    _sut = new VerificationService(
         _loggerMock.Object,
         _dispatcherMock.Object,
         _redisDbMock.Object,
@@ -57,7 +57,7 @@ public class VerificationServiceROPTests {
     _quizServiceMock.Setup(s => s.GetRandomQuiz()).Returns(quiz);
 
     // Act
-    Result<VerificationServiceROP.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
+    Result<VerificationService.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
 
     // Assert
     result.IsSuccess.Should().BeTrue();
@@ -82,7 +82,7 @@ public class VerificationServiceROPTests {
     _quizServiceMock.Setup(s => s.GetRandomQuiz()).Returns((Quiz?)null);
 
     // Act
-    Result<VerificationServiceROP.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
+    Result<VerificationService.VerificationQuizData, VerificationError> result = _sut.PrepareQuiz();
 
     // Assert
     result.IsFailure.Should().BeTrue();

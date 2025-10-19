@@ -17,7 +17,16 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.9.25" />
+    <PackageReference Include="System.Threading.Tasks.Dataflow" Version="9.0.10" />
     <PackageReference Include="WTelegramBot" Version="9.2.0" />
     <InternalsVisibleTo Include="TelegramVerificationBot.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <_ContentIncludedByDefault Remove="data\quizzes.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="data\" />
   </ItemGroup>
 </Project>
