@@ -135,11 +135,13 @@ public class VerificationService(
 
       var triggerExpiry = TimeSpan.FromMinutes(VerificationTimeoutMinutes);
       var dataExpiry = triggerExpiry + TimeSpan.FromSeconds(MessageDeletionDelaySeconds);
+      var timeoutTimestamp = DateTimeOffset.UtcNow.Add(triggerExpiry).ToUnixTimeSeconds();
 
       _ = tran.StringSetAsync(sessionKey, sessionJson, dataExpiry);
       _ = tran.StringSetAsync(correctTokenMapKey, sessionId, dataExpiry);
       _ = tran.StringSetAsync(lookupKey, sessionId, dataExpiry);
-      _ = tran.StringSetAsync(timeoutKey, sessionId, triggerExpiry);
+      _ = tran.SortedSetAddAsync("verify:timeout_queue", sessionId, timeoutTimestamp);
+      _ = tran.StringSetAsync(timeoutKey, sessionId, dataExpiry);
       foreach (var key in tokenMapKeyList) {
         _ = tran.StringSetAsync(key, sessionId, dataExpiry);
       }
@@ -343,10 +345,18 @@ public class VerificationService(
         yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, session.TargetChatId, true));
         break;
     }
+
     var sessionKey = $"verify:session:{session.SessionId}";
     var lookupKey = $"verify:lookup:{session.TargetChatId}:{user.Id}";
     var timeoutKey = $"verify:timeout:{session.TargetChatId}:{user.Id}";
-    yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+    // yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+    yield return async () => {
+      var tran = redisDb.CreateTransaction();
+      var keysToDelete = new RedisKey[] { sessionKey, lookupKey, timeoutKey };
+      _ = tran.KeyDeleteAsync(keysToDelete);
+      _ = tran.SortedSetRemoveAsync("verify:timeout_queue", session.SessionId);
+      await tran.ExecuteAsync();
+    };
 
     yield return () => {
       var cleanupTask = new CleanupTask(message.Id, message.Chat.Id);
@@ -374,7 +384,14 @@ public class VerificationService(
         var sessionKey = $"verify:session:{session.SessionId}";
         var lookupKey = $"verify:lookup:{session.TargetChatId}:{job.User.Id}";
         var timeoutKey = $"verify:timeout:{session.TargetChatId}:{job.User.Id}";
-        yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+        // yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
+        yield return async () => {
+          var tran = redisDb.CreateTransaction();
+          var keysToDelete = new RedisKey[] { sessionKey, lookupKey, timeoutKey };
+          _ = tran.KeyDeleteAsync(keysToDelete);
+          _ = tran.SortedSetRemoveAsync("verify:timeout_queue", session.SessionId);
+          await tran.ExecuteAsync();
+        };
 
 
         // Chain to the generic failure plan.
@@ -412,6 +429,43 @@ public class VerificationService(
         yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, session.TargetChatId, false));
         break;
     }
+  }
+
+  #endregion
+
+  #region Handle timeout
+
+  public async Task HandleTimeoutJob(ProcessVerificationTimeoutJob job) {
+    var session = job.session;
+    var userId = job.UserId;
+    var chatId = job.ChatId;
+    logger.LogInformation("Verification timed out for user {UserId}. Context: {Context}. Kicking/Declining.", userId, session.ContextType);
+
+    var denialMessage = "❌ 验证已超时，操作已被取消。";
+
+    Task finalActionTask = session.ContextType switch {
+      VerificationContextType.InGroupRestriction => dispatcher.DispatchAsync(new KickUserJob(chatId, userId)),
+      VerificationContextType.JoinRequest => dispatcher.DispatchAsync(new ChatJoinRequestJob(userId, chatId, false)),
+      _ => Task.CompletedTask
+    };
+
+
+    long msgChatId = 0;
+
+    if (session.VerificationMessageId.HasValue) {
+      if (session.ContextType == VerificationContextType.InGroupRestriction) {
+        msgChatId = chatId;
+      } else if (session.ContextType == VerificationContextType.JoinRequest) {
+        msgChatId = userId;
+      }
+    }
+    var cleanupTask = new CleanupTask(session.VerificationMessageId!.Value, msgChatId);
+    var editMessageTask = dispatcher.DispatchAsync(new EditMessageJob(msgChatId, session.VerificationMessageId.Value, denialMessage));
+    var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
+    var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
+    var addCleanup =  redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+
+    await Task.WhenAll(finalActionTask, editMessageTask, addCleanup);
   }
 
   #endregion

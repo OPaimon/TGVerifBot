@@ -78,3 +78,11 @@ public record SendMessageVerfJob(long ChatId, string Text) : IJob {
   public Task ProcessAsync(IServiceProvider sp) =>
       sp.GetRequiredService<TelegramService>().SendMessageAsync(this);
 }
+
+public record ProcessVerificationTimeoutJob(VerificationSession session) : IKeyedJob, IJob {
+  public long UserId { get; } = session.UserId;
+  public long ChatId { get; } = session.TargetChatId;
+  public Task ProcessAsync(IServiceProvider sp) =>
+    sp.GetRequiredService<VerificationService>().HandleTimeoutJob(this);
+
+}

@@ -72,7 +72,7 @@ try {
   builder.Services.AddSingleton<TelegramService>();
   builder.Services.AddSingleton<VerificationService>();
   builder.Services.AddQuizService();
-  builder.Services.AddSingleton<ExpiredStateService>();
+  // builder.Services.AddSingleton<ExpiredStateService>();
 
 
 
@@ -99,8 +99,9 @@ try {
 
   builder.Services.AddSingleton<IRateLimiter, RedisTokenBucketRateLimiter>();
   builder.Services.AddSingleton<AppJsonSerializerContext>();
-  builder.Services.AddHostedService<RedisKeyeventListener>();
+  // builder.Services.AddHostedService<RedisKeyeventListener>();
   builder.Services.AddHostedService<CleanupWorkerService>();
+  builder.Services.AddHostedService<VerificationTimeoutWorkerService>();
   builder.Services.AddHostedService<Worker>();
 
   var host = builder.Build();
