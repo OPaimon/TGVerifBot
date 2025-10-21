@@ -24,6 +24,8 @@ public enum VerificationErrorKind {
   StateValidationFailed
 }
 
+
+
 public readonly struct VerificationError(VerificationErrorKind kind, string message) {
   public VerificationErrorKind Kind { get; } = kind;
   public string Message { get; } = message;
@@ -187,7 +189,7 @@ public class VerificationService(
     switch (error.Kind) {
       case VerificationErrorKind.UserPending: // 假设我们有一个更精确的错误类型
         messageText = "❌ 您有一个正在进行的验证，请先完成它。";
-        dispatcher.DispatchAsync(new SendMessageVerfJob(job.ChatId, messageText));
+        dispatcher.DispatchAsync(new SendTempMsgJob(job.ChatId, messageText));
         return Task.CompletedTask;
       case VerificationErrorKind.UserOnCooldown:
         messageText = "❌ 您处于冷却时间内，请稍后再试。";
@@ -202,7 +204,7 @@ public class VerificationService(
         return Task.CompletedTask;
     }
 
-    dispatcher.DispatchAsync(new SendMessageVerfJob(job.ChatId, messageText));
+    dispatcher.DispatchAsync(new SendTempMsgJob(job.ChatId, messageText));
 
     switch (contextType) {
       case VerificationContextType.InGroupRestriction:
@@ -364,6 +366,9 @@ public class VerificationService(
       var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
       return redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
     };
+
+    yield return () =>
+      dispatcher.DispatchAsync(new SendLogJob(session.TargetChatId, user.Id, LogType.Accept));
   }
 
   internal IEnumerable<Func<Task>> CreateFailurePlan(VerificationError error, ProcessQuizCallbackJob job, VerificationSession session) {
@@ -429,6 +434,9 @@ public class VerificationService(
         yield return () => dispatcher.DispatchAsync(new ChatJoinRequestJob(user.Id, session.TargetChatId, false));
         break;
     }
+
+    yield return () =>
+      dispatcher.DispatchAsync(new SendLogJob(session.TargetChatId, user.Id, LogType.FailError));
   }
 
   #endregion
@@ -464,8 +472,10 @@ public class VerificationService(
     var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
     var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
     var addCleanup =  redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+    var sendLog2TG =
+      dispatcher.DispatchAsync(new SendLogJob(chatId, userId, LogType.FailTimeout));
 
-    await Task.WhenAll(finalActionTask, editMessageTask, addCleanup);
+    await Task.WhenAll(finalActionTask, editMessageTask, addCleanup, sendLog2TG);
   }
 
   #endregion

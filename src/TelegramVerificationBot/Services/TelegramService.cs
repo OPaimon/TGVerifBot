@@ -9,6 +9,7 @@ using TelegramVerificationBot.Models;
 using TelegramVerificationBot.Tasks;
 using TL;
 using WTelegram;
+using Chat = WTelegram.Types.Chat;
 
 namespace TelegramVerificationBot.Services;
 
@@ -52,7 +53,7 @@ public class TelegramService(
     switch (update) {
       case { ChatJoinRequest: not null } cjr:
         logger.LogInformation("New chat join request from user {UserId} for chat {ChatId}", cjr.ChatJoinRequest.From.Id, cjr.ChatJoinRequest.Chat.Id);
-        await dispatcher.DispatchAsync(new StartVerificationJob(
+        var startVerfR = dispatcher.DispatchAsync(new StartVerificationJob(
           UserId: cjr.ChatJoinRequest.From.Id,
           ChatId: cjr.ChatJoinRequest.Chat.Id,
           UserChatId: cjr.ChatJoinRequest.From.Id,
@@ -60,13 +61,17 @@ public class TelegramService(
           InviteLink: cjr.ChatJoinRequest.InviteLink?.InviteLink ?? string.Empty,
           ChatTitle: cjr.ChatJoinRequest.Chat.Title
         ));
+        var logToTGR = dispatcher.DispatchAsync(new SendLogJob(ChatId: cjr.ChatJoinRequest.Chat.Id,
+          UserId: cjr.ChatJoinRequest.From.Id, LogType.Request));
+
+        await Task.WhenAll(startVerfR, logToTGR);
         break;
 
       case {
         ChatMember: {
           NewChatMember.User: { IsBot: false, Id: var userId, FirstName: var firstName },
           NewChatMember.Status: ChatMemberStatus.Member,
-          Chat: { Id: var chatId, Title: var chatTitle },
+          Chat: { Id: var chatId, Title: var chatTitle, Type: ChatType.Group or ChatType.Supergroup},
           From: { Id: var fromId },
         }
       }
@@ -89,7 +94,7 @@ public class TelegramService(
                 "Invitation from regular member for user {UserId} in chat {ChatTitle}, starting verification.",
                 userId,
                 chatTitle);
-              var startVerf = dispatcher.DispatchAsync(new StartVerificationJob(
+              var startVerfG = dispatcher.DispatchAsync(new StartVerificationJob(
                 UserId: userId,
                 ChatId: chatId,
                 UserChatId: chatId,
@@ -97,7 +102,11 @@ public class TelegramService(
                 InviteLink: string.Empty,
                 ChatTitle: chatTitle
               ));
-              await Task.WhenAll(startVerf);
+              var logToTGG = dispatcher.DispatchAsync(new SendLogJob(
+                ChatId: chatId,
+                UserId: userId,
+                LogType.NewGroup));
+              await Task.WhenAll(startVerfG, logToTGG);
               break;
           }
           break;
@@ -115,7 +124,7 @@ public class TelegramService(
         break;
 
       default:
-        logger.LogInformation("Received unhandled update type: {UpdateType}", update.GetType().Name);
+        // logger.LogInformation("Received unhandled update type: {UpdateType}", update.GetType().Name);
         break;
     }
   }
@@ -132,7 +141,7 @@ public class TelegramService(
         await dispatcher.DispatchAsync(pingJob);
         break;
       default:
-        logger.LogInformation("Received message of type {MessageType} from chat {ChatId}", msg.Type, msg.Chat.Id);
+        // logger.LogInformation("Received message of type {MessageType} from chat {ChatId}", msg.Type, msg.Chat.Id);
         break;
     }
   }
@@ -199,17 +208,32 @@ public class TelegramService(
     await dispatcher.DispatchAsync(new SendQuizCallbackJob(userId, chatId, result!.Id, userChatId, job.SessionId));
   }
 
-  public async Task SendMessageAsync(SendMessageVerfJob job) {
+  public async Task SendTempMsgAsync(SendTempMsgJob job) {
 
     var result = await _bot!.SendMessage(
       job.ChatId, job.Text,
       parseMode: ParseMode.Html,
       protectContent: true);
     logger.LogInformation("Sent message to chat {ChatId}: {Text}", job.ChatId, job.Text);
-    // delete after 10 seconds
+
     await Task.Delay(10000);
     await _bot.DeleteMessages(job.ChatId, [result!.Id]);
     logger.LogInformation("Deleted message {MessageId} in chat {ChatId}", result.Id, job.ChatId);
+  }
+
+  public async Task SendLogAsync(SendLogJob job) {
+    Chat? chat = _bot!.Chat(job.ChatId);
+    var user = _bot.User(job.UserId);
+    var text = $"""
+                #{job.type.ToString()}
+                <b>群组:</b> {chat!.Title}
+                <b>群组ID:</b> #GID{-chat!.Id}
+                <b>用户:</b> #UID{user!.Id}
+                <b>昵称:</b> {MentionHTML(user.FirstName, user.Id)}
+                <b>OPBot:</b> #bot{_bot.BotId}
+                """;
+    await _bot.SendMessage(-1003147968094, text, ParseMode.Html);
+    logger.LogInformation("Sent Log to chat {ChatId}: {Text}", job.ChatId, job.type.ToString());
   }
 
   /// <summary>

@@ -29,10 +29,7 @@ public record ProcessQuizCallbackJob(string CallbackData, string QueryId, User U
   public Task ProcessAsync(IServiceProvider sp) =>
       sp.GetRequiredService<VerificationService>().HandleCallbackAsync(this);
 }
-public record RedisKeyEventJob(string Key, string Event) : IJob {
-  public Task ProcessAsync(IServiceProvider sp) =>
-      sp.GetRequiredService<ExpiredStateService>().HandleRedisKeyEventAsync(this);
-}
+
 public record RespondToPingJob(long ChatId) : IJob {
   public Task ProcessAsync(IServiceProvider sp) =>
       sp.GetRequiredService<TelegramService>().RespondToPingAsync(this);
@@ -74,9 +71,9 @@ public record KickUserJob(long ChatId, long UserId) : IKeyedJob, IJob {
   public Task ProcessAsync(IServiceProvider sp) =>
       sp.GetRequiredService<TelegramService>().KickUserAsync(this);
 }
-public record SendMessageVerfJob(long ChatId, string Text) : IJob {
+public record SendTempMsgJob(long ChatId, string Text) : IJob {
   public Task ProcessAsync(IServiceProvider sp) =>
-      sp.GetRequiredService<TelegramService>().SendMessageAsync(this);
+      sp.GetRequiredService<TelegramService>().SendTempMsgAsync(this);
 }
 
 public record ProcessVerificationTimeoutJob(VerificationSession session) : IKeyedJob, IJob {
@@ -84,5 +81,11 @@ public record ProcessVerificationTimeoutJob(VerificationSession session) : IKeye
   public long ChatId { get; } = session.TargetChatId;
   public Task ProcessAsync(IServiceProvider sp) =>
     sp.GetRequiredService<VerificationService>().HandleTimeoutJob(this);
+
+}
+
+public record SendLogJob(long ChatId,long UserId, LogType type) : IKeyedJob, IJob {
+  public Task ProcessAsync(IServiceProvider sp) =>
+    sp.GetRequiredService<TelegramService>().SendLogAsync(this);
 
 }

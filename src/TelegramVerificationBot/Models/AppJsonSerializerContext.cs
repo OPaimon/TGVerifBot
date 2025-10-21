@@ -39,3 +39,11 @@ public enum VerificationContextType {
   InGroupRestriction,
   JoinRequest
 }
+
+public enum LogType {
+  FailError,
+  FailTimeout,
+  Accept,
+  Request,
+  NewGroup
+}
