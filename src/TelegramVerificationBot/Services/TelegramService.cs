@@ -105,7 +105,7 @@ public class TelegramService(
               var logToTGG = dispatcher.DispatchAsync(new SendLogJob(
                 ChatId: chatId,
                 UserId: userId,
-                LogType.NewGroup));
+                LogType.Request));
               await Task.WhenAll(startVerfG, logToTGG);
               break;
           }

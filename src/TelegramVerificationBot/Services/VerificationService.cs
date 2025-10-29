@@ -190,7 +190,8 @@ public class VerificationService(
       case VerificationErrorKind.UserPending: // 假设我们有一个更精确的错误类型
         messageText = "❌ 您有一个正在进行的验证，请先完成它。";
         dispatcher.DispatchAsync(new SendTempMsgJob(job.ChatId, messageText));
-        return Task.CompletedTask;
+        // return Task.CompletedTask;
+      break;
       case VerificationErrorKind.UserOnCooldown:
         messageText = "❌ 您处于冷却时间内，请稍后再试。";
         break;
