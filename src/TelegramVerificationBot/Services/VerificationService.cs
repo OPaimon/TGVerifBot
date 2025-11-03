@@ -47,6 +47,121 @@ public class VerificationService(
   public int MessageDeletionDelaySeconds { get; set; } = 10;
   public static int CooldownMinutes { get; set; } = 1;
 
+
+  /// <summary>
+  /// 创建一个任务，用于从 Redis 中原子性地清理与会话相关的所有键。
+  /// </summary>
+  private Task CleanupVerificationSessionAsync(VerificationSession session) {
+    var sessionKey = $"verify:session:{session.SessionId}";
+    var lookupKey = $"verify:lookup:{session.TargetChatId}:{session.UserId}";
+
+    // 1. 收集所有要删除的键
+    var keysToDelete = new List<RedisKey> { sessionKey, lookupKey };
+
+    // 2. 添加所有 token_map 键
+    // (假设 session.OptionsWithTokens 始终被填充)
+    keysToDelete.AddRange(
+      session.OptionsWithTokens.Select(o => (RedisKey)$"verify:token_map:{o.Token}")
+    );
+
+    var tran = redisDb.CreateTransaction();
+
+    // 3. 批量删除所有键
+    _ = tran.KeyDeleteAsync(keysToDelete.ToArray());
+
+    // 4. 从超时队列中移除
+    _ = tran.SortedSetRemoveAsync("verify:timeout_queue", session.SessionId);
+
+    // 返回事务执行的 Task
+    return tran.ExecuteAsync();
+  }
+
+  /// <summary>
+  /// 创建一个任务，用于向 Redis 延迟队列中添加一个消息清理作业。
+  /// (这个助手保持不变)
+  /// </summary>
+  private Task ScheduleMessageCleanupAsync(int messageId, long chatId) {
+    var cleanupTask = new CleanupTask(messageId, chatId);
+    var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
+    var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
+
+    return redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+  }
+
+  /// <summary>
+  /// 查找并清理指定用户在特定聊天中的任何现有验证会话。
+  /// 这主要用于处理用户在旧会话未结束时发起新验证的场景。
+  /// </summary>
+  /// <param name="userId">用户 ID</param>
+  /// <param name="targetChatId">目标聊天 ID</param>
+  public async Task CleanupPreviousSessionAsync(long userId, long targetChatId) {
+    var lookupKey = $"verify:lookup:{targetChatId}:{userId}";
+
+    // 1. 通过 lookupKey 查找 SessionId
+    var sessionId = await redisDb.StringGetAsync(lookupKey);
+
+    if (sessionId.IsNullOrEmpty) {
+      // 没有找到活动会话，无需清理
+      logger.LogInformation("No previous session found for user {UserId} in chat {ChatId}.", userId, targetChatId);
+      return;
+    }
+
+    var sessionKey = $"verify:session:{sessionId}";
+
+    // 2. 获取完整的会话对象
+    var sessionJson = await redisDb.StringGetAsync(sessionKey);
+
+    if (sessionJson.IsNullOrEmpty) {
+      // 发现了一个“孤儿” lookupKey（有 lookup 但没有 session）
+      // 我们仍然应该清理我们所知道的键
+      logger.LogWarning("Found orphan session lookup for {SessionId}. Cleaning up known keys.", sessionId);
+
+      var tran = redisDb.CreateTransaction();
+      _ = tran.KeyDeleteAsync(new RedisKey[] { lookupKey, sessionKey });
+      _ = tran.SortedSetRemoveAsync("verify:timeout_queue", sessionId.ToString());
+      await tran.ExecuteAsync();
+      return;
+    }
+
+    try {
+      var session = JsonSerializer.Deserialize<VerificationSession>(sessionJson.ToString(), jsonContext.VerificationSession);
+      if (session == null) {
+        logger.LogError("Failed to deserialize session {SessionId} for cleanup.", sessionId);
+        return;
+      }
+
+      // --- 核心清理逻辑 ---
+
+      // 3. 调度旧消息的清理
+      // 检查 VerificationMessageId 是否已被 HandleSendQuizCallback 填入
+      if (session.VerificationMessageId.HasValue) {
+        await ScheduleMessageCleanupAsync(
+            session.VerificationMessageId.Value,
+            session.ContextType switch  {
+              VerificationContextType.InGroupRestriction => session.TargetChatId,
+              VerificationContextType.JoinRequest => session.UserId,
+              _ => throw new ArgumentOutOfRangeException()
+            }
+        );
+      }
+
+      // 4. 清理 Redis 中的所有会话数据
+      await CleanupVerificationSessionAsync(session);
+
+      // --- 清理完毕 ---
+
+      logger.LogInformation("Successfully cleaned up previous session {SessionId} for user {UserId} in chat {ChatId}.",
+          session.SessionId, userId, targetChatId);
+    } catch (Exception ex) {
+      logger.LogError(ex, "Failed during cleanup of session {SessionId}.", sessionId);
+      // 即使反序列化失败，也尝试清理关键键
+      var tran = redisDb.CreateTransaction();
+      _ = tran.KeyDeleteAsync(new RedisKey[] { lookupKey, sessionKey });
+      _ = tran.SortedSetRemoveAsync("verify:timeout_queue", sessionId.ToString());
+      await tran.ExecuteAsync();
+    }
+  }
+
   #region Handle Start Verification
 
   public async Task HandleStartVerificationAsync(StartVerificationJob job) {
@@ -131,7 +246,6 @@ public class VerificationService(
         .Select(o => $"verify:token_map:{o.Token}")
         .ToList();
       var lookupKey = $"verify:lookup:{job.ChatId}:{job.UserId}";
-      var timeoutKey = $"verify:timeout:{job.ChatId}:{job.UserId}";
 
       var tran = redisDb.CreateTransaction();
 
@@ -143,7 +257,6 @@ public class VerificationService(
       _ = tran.StringSetAsync(correctTokenMapKey, sessionId, dataExpiry);
       _ = tran.StringSetAsync(lookupKey, sessionId, dataExpiry);
       _ = tran.SortedSetAddAsync("verify:timeout_queue", sessionId, timeoutTimestamp);
-      _ = tran.StringSetAsync(timeoutKey, sessionId, dataExpiry);
       foreach (var key in tokenMapKeyList) {
         _ = tran.StringSetAsync(key, sessionId, dataExpiry);
       }
@@ -177,7 +290,7 @@ public class VerificationService(
     ));
   }
 
-  internal Task HandleStartVerificationFailure(StartVerificationJob job, VerificationError error) {
+  internal async Task HandleStartVerificationFailure(StartVerificationJob job, VerificationError error) {
     logger.LogWarning("Failed to start verification for user {UserId}: {Error}", job.UserId, error);
 
     var contextType = job.UserChatId == job.ChatId
@@ -187,11 +300,49 @@ public class VerificationService(
     string messageText;
 
     switch (error.Kind) {
-      case VerificationErrorKind.UserPending: // 假设我们有一个更精确的错误类型
-        messageText = "❌ 您有一个正在进行的验证，请先完成它。";
-        dispatcher.DispatchAsync(new SendTempMsgJob(job.ChatId, messageText));
-        // return Task.CompletedTask;
-      break;
+      case VerificationErrorKind.UserPending: // 这表示检测到了一个旧的、未完成的会话
+
+        // 1. 记录我们将要执行的操作
+        logger.LogInformation(
+          "User {UserId} in chat {ChatId} has a pending session. Cleaning up the old session and failing the new request.",
+          job.UserId, job.ChatId
+        );
+
+        // 2. 关键：调用清理助手，清理掉旧的会话、消息和所有相关 Redis 键
+        try
+        {
+          await CleanupPreviousSessionAsync(job.UserId, job.ChatId);
+        }
+        catch (Exception ex)
+        {
+          logger.LogError(ex, "Failed to cleanup previous session for user {UserId} during UserPending failure handling.", job.UserId);
+          // 即使清理失败，也要继续执行踢出/拒绝，以阻止用户进入
+        }
+
+        // 3. 根据上下文向用户发送新消息并执行操作
+        switch (contextType) {
+          case VerificationContextType.InGroupRestriction:
+            // 告诉用户旧的已被清理，然后把他们踢出去，让他们重试
+            messageText = "❌ 您有一个正在进行的验证。我们已将其清理。\n请您重新加入群组以开始新的验证。";
+
+            // 立即发送消息...
+            await dispatcher.DispatchAsync(new SendTempMsgJob(job.UserChatId, messageText));
+            // ...然后立即踢出（不需要延迟）
+            await dispatcher.DispatchAsync(new KickUserJob(job.ChatId, job.UserId));
+            break;
+
+          case VerificationContextType.JoinRequest:
+            // 告诉用户旧的被清理了，然后拒绝 *当前* 的JReq，让他们重试
+            messageText = "❌ 您有一个正在进行的验证请求。我们已将其清理。\n请您重新提交加入请求。";
+
+            await dispatcher.DispatchAsync(new SendTempMsgJob(job.UserChatId, messageText));
+            // 拒绝当前的加入请求
+            await dispatcher.DispatchAsync(new ChatJoinRequestJob(job.UserId, job.ChatId, false));
+            break;
+        }
+
+        // 4. 任务完成，返回 (不再需要 Task.CompletedTask)
+        return;
       case VerificationErrorKind.UserOnCooldown:
         messageText = "❌ 您处于冷却时间内，请稍后再试。";
         break;
@@ -202,23 +353,21 @@ public class VerificationService(
 
       default:
         logger.LogError("为用户 {UserId} 启动验证时遇到未处理的错误: {Error}", job.UserId, error);
-        return Task.CompletedTask;
+        return;
     }
 
-    dispatcher.DispatchAsync(new SendTempMsgJob(job.ChatId, messageText));
+    _ = dispatcher.DispatchAsync(new SendTempMsgJob(job.UserChatId, messageText));
 
     switch (contextType) {
       case VerificationContextType.InGroupRestriction:
-        Task.Delay(TimeSpan.FromSeconds(5))
-            .ContinueWith(_ => dispatcher.DispatchAsync(new KickUserJob(job.ChatId, job.UserId)));
+        _ = Task.Delay(TimeSpan.FromSeconds(5))
+          .ContinueWith(_ => dispatcher.DispatchAsync(new KickUserJob(job.ChatId, job.UserId)));
         break;
 
       case VerificationContextType.JoinRequest:
-        dispatcher.DispatchAsync(new ChatJoinRequestJob(job.UserId, job.ChatId, false));
+        _ = dispatcher.DispatchAsync(new ChatJoinRequestJob(job.UserId, job.ChatId, false));
         break;
     }
-
-    return Task.CompletedTask;
   }
 
   public async Task HandleSendQuizCallback(SendQuizCallbackJob job) {
@@ -351,11 +500,10 @@ public class VerificationService(
 
     var sessionKey = $"verify:session:{session.SessionId}";
     var lookupKey = $"verify:lookup:{session.TargetChatId}:{user.Id}";
-    var timeoutKey = $"verify:timeout:{session.TargetChatId}:{user.Id}";
     // yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
     yield return async () => {
       var tran = redisDb.CreateTransaction();
-      var keysToDelete = new RedisKey[] { sessionKey, lookupKey, timeoutKey };
+      var keysToDelete = new RedisKey[] { sessionKey, lookupKey };
       _ = tran.KeyDeleteAsync(keysToDelete);
       _ = tran.SortedSetRemoveAsync("verify:timeout_queue", session.SessionId);
       await tran.ExecuteAsync();
@@ -389,11 +537,10 @@ public class VerificationService(
 
         var sessionKey = $"verify:session:{session.SessionId}";
         var lookupKey = $"verify:lookup:{session.TargetChatId}:{job.User.Id}";
-        var timeoutKey = $"verify:timeout:{session.TargetChatId}:{job.User.Id}";
         // yield return () => redisDb.KeyDeleteAsync([sessionKey, lookupKey, timeoutKey]);
         yield return async () => {
           var tran = redisDb.CreateTransaction();
-          var keysToDelete = new RedisKey[] { sessionKey, lookupKey, timeoutKey };
+          var keysToDelete = new RedisKey[] { sessionKey, lookupKey };
           _ = tran.KeyDeleteAsync(keysToDelete);
           _ = tran.SortedSetRemoveAsync("verify:timeout_queue", session.SessionId);
           await tran.ExecuteAsync();
@@ -472,7 +619,7 @@ public class VerificationService(
     var editMessageTask = dispatcher.DispatchAsync(new EditMessageJob(msgChatId, session.VerificationMessageId.Value, denialMessage));
     var taskJson = JsonSerializer.Serialize(cleanupTask, jsonContext.CleanupTask);
     var executeAtTimestamp = DateTimeOffset.UtcNow.AddSeconds(MessageDeletionDelaySeconds).ToUnixTimeSeconds();
-    var addCleanup =  redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
+    var addCleanup = redisDb.SortedSetAddAsync("cleanup_queue", taskJson, executeAtTimestamp);
     var sendLog2TG =
       dispatcher.DispatchAsync(new SendLogJob(chatId, userId, LogType.FailTimeout));
 

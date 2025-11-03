@@ -84,7 +84,7 @@ public record ProcessVerificationTimeoutJob(VerificationSession session) : IKeye
 
 }
 
-public record SendLogJob(long ChatId,long UserId, LogType type) : IKeyedJob, IJob {
+public record SendLogJob(long ChatId, long UserId, LogType type) : IKeyedJob, IJob {
   public Task ProcessAsync(IServiceProvider sp) =>
     sp.GetRequiredService<TelegramService>().SendLogAsync(this);
 

@@ -71,7 +71,7 @@ public class TelegramService(
         ChatMember: {
           NewChatMember.User: { IsBot: false, Id: var userId, FirstName: var firstName },
           NewChatMember.Status: ChatMemberStatus.Member,
-          Chat: { Id: var chatId, Title: var chatTitle, Type: ChatType.Group or ChatType.Supergroup},
+          Chat: { Id: var chatId, Title: var chatTitle, Type: ChatType.Group or ChatType.Supergroup },
           From: { Id: var fromId },
         }
       }
