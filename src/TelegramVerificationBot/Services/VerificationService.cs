@@ -452,7 +452,7 @@ public class VerificationService(
   internal async Task<Result<VerificationSession, VerificationError>> FindSessionByTokenAsync(string callbackToken) {
     var tokenMapKey = $"verify:token_map:{callbackToken}";
 
-    var sessionId = await redisDb.StringGetDeleteAsync(tokenMapKey);
+    var sessionId = await redisDb.StringGetAsync(tokenMapKey);
 
     if (sessionId.IsNullOrEmpty) {
       return Result.Failure<VerificationSession, VerificationError>(new VerificationError(
