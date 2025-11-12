@@ -1,6 +1,7 @@
 namespace TelegramVerificationBot.Configuration;
 
 public partial class RateLimitingSettings {
+  public string ActiveStrategy { get; set; } = "TokenBucket";
   public FixedWindowSettings FixedWindow { get; set; } = new();
   public TokenBucketSettings TokenBucket { get; set; } = new();
   public LeakyBucketSettings LeakyBucket { get; set; } = new();

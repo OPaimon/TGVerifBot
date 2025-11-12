@@ -1,3 +1,5 @@
+using TelegramVerificationBot.Services;
+
 namespace TelegramVerificationBot.Dispatcher;
 
 using System.Threading.Tasks.Dataflow;
